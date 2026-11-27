@@ -7,7 +7,7 @@ import Map from '@/components/Map';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { BigNumber, Empty, ErrorNote, Hero, Panel, PhotoGrid, Row, Rows, Screen, TabBar, TopBar, useConfirm } from '@/components/game-ui';
+import { BigNumber, Empty, ErrorNote, Hero, Panel, PhotoGrid, PlayerList, Row, Rows, Screen, TabBar, TopBar, useConfirm } from '@/components/game-ui';
 import { useLiveData, useNow } from '@/lib/hooks';
 import { rpc, select, supabase } from '@/lib/supabase';
 import { askNotifications, fmtAgo, fmtCountdown, fmtTime, ping, signedUrls, TEAM_COLORS } from '@/lib/util';
@@ -153,6 +153,7 @@ export default function ChickenPage({ params }) {
                 <span key={t.id} className="inline-flex items-center gap-1.5 rounded-full border-2 bg-card-2 px-3 py-1 font-extrabold" style={{ borderColor: colorOf[t.id] }}>
                   <span className="size-2.5 rounded-full" style={{ background: colorOf[t.id] }} aria-hidden />
                   {t.name}
+                  {t.players?.length > 0 && <span className="font-semibold text-muted-foreground">· {t.players.length}</span>}
                 </span>
               ))}
             </div>
@@ -274,6 +275,7 @@ export default function ChickenPage({ params }) {
                       <b className="flex-1 text-lg">{t.name}</b>
                       <StatusBadge t={t} />
                     </div>
+                    <PlayerList players={t.players} />
                     <p className="text-sm font-semibold text-muted-foreground">
                       {v ? `At ${pubName(v.pub_id)} since ${fmtTime(v.arrived_at)} · ` : ''}
                       <span className={stale ? 'text-alert' : ''}>active {fmtAgo(t.last_active_at, now)}</span>

@@ -7,7 +7,7 @@ import Map from '@/components/Map';
 import PhotoButton from '@/components/PhotoButton';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { BigNumber, Confetti, Empty, ErrorNote, Hero, Panel, Row, Rows, Screen, TabBar, TopBar, useConfirm } from '@/components/game-ui';
+import { BigNumber, Confetti, Empty, ErrorNote, Hero, Panel, PlayersEditor, Row, Rows, Screen, TabBar, TopBar, useConfirm } from '@/components/game-ui';
 import { currentPosition, useLiveData, useLocation, useNow } from '@/lib/hooks';
 import { rpc, select, supabase } from '@/lib/supabase';
 import { askNotifications, distM, fmtCountdown, fmtTime, inZone, ping, uploadPhoto } from '@/lib/util';
@@ -50,7 +50,9 @@ export default function TeamPage({ params }) {
   const seen = useRef(null);
 
   const live = data?.game.status === 'live';
-  const { fix, error: gpsError } = useLocation(live, (f) => {
+  // location is shared from the moment the team joins (lobby and head start too), until the game ends
+  const tracking = !!data && data.game.status !== 'ended';
+  const { fix, error: gpsError } = useLocation(tracking, (f) => {
     rpc('report_location', { g: id, lat: f.lat, lng: f.lng }).catch(() => {});
   });
 
@@ -155,6 +157,7 @@ export default function TeamPage({ params }) {
         emoji="🍻"
         tone="hunt"
         title={team.name}
+        sub={team.players?.length ? `👥 ${team.players.join(', ')}` : undefined}
         right={<Badge variant="found" className="text-sm">🐔 {progress.found}/{progress.total} found</Badge>}
       />
       {gpsError && (
@@ -179,6 +182,7 @@ export default function TeamPage({ params }) {
           </Hero>
         )}
         <Button block variant="secondary" className="mb-4" onClick={askNotifications}><Bell aria-hidden /> Turn on alerts</Button>
+        <TeamPlayers gameId={id} players={team.players || []} onSaved={refresh} />
         <Map pubs={mapPubs} zone={zone} people={me} />
       </Screen>
     );
@@ -348,5 +352,38 @@ export default function TeamPage({ params }) {
         ]}
       />
     </Screen>
+  );
+}
+
+// Edit who's on the team before the hunt starts
+function TeamPlayers({ gameId, players, onSaved }) {
+  const [list, setList] = useState(players);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const key = players.join('|');
+  useEffect(() => setList(players), [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const changed = list.join('|') !== key;
+  async function save() {
+    setBusy(true);
+    setError(null);
+    try {
+      await rpc('team_set_players', { g: gameId, players: list });
+      toast.success('Team updated');
+      onSaved();
+    } catch (e) {
+      setError(e.message);
+    }
+    setBusy(false);
+  }
+  return (
+    <Panel title={`Your team (${list.length})`}>
+      <PlayersEditor value={list} onChange={setList} id="team-player" />
+      <ErrorNote>{error}</ErrorNote>
+      {changed && (
+        <Button block variant="found" className="mt-3" disabled={busy || list.length === 0} onClick={save}>
+          Save team
+        </Button>
+      )}
+    </Panel>
   );
 }

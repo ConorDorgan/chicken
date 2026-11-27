@@ -12,6 +12,9 @@ drop table if exists public.clues, public.alerts, public.locations, public.visit
   public.teams, public.members, public.zones, public.game_pubs, public.game_secrets,
   public.game_codes, public.games, public.pubs, public.admins, public.app_settings cascade;
 
+-- older versions of functions whose parameters have since changed
+drop function if exists public.join_game(text, text);
+
 create schema chicken_private;
 revoke all on schema chicken_private from public, anon, authenticated;
 
@@ -101,6 +104,7 @@ create table public.teams (
   last_lat double precision,
   last_lng double precision,
   removed boolean not null default false,
+  players text[] not null default '{}',
   created_at timestamptz not null default now(),
   unique (game_id, name)
 );
@@ -399,7 +403,21 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- joining
-create or replace function public.join_game(code text, team_name text default null)
+-- clean a list of player names: trimmed, no blanks, no duplicates (ignoring case), at most 12
+create or replace function chicken_private.clean_players(names text[]) returns text[]
+language sql immutable as $$
+  select coalesce(array_agg(n order by first_pos), '{}')
+  from (
+    select min(trim(x)) as n, min(pos) as first_pos
+    from unnest(coalesce(names, '{}')) with ordinality as u(x, pos)
+    where trim(x) <> ''
+    group by lower(trim(x))
+  ) s
+$$;
+
+
+create or replace function public.join_game(code text, team_name text default null, players text[] default null,
+                                            lat double precision default null, lng double precision default null)
 returns table (game_id uuid, role text, team_id uuid)
 language plpgsql security definer set search_path = public as $$
 declare
@@ -409,6 +427,7 @@ declare
   t uuid;
   clean_code text := upper(trim(code));
   clean_name text := trim(team_name);
+  names text[] := chicken_private.clean_players(players);
 begin
   if auth.uid() is null then raise exception 'Not signed in'; end if;
   select * into c from game_codes where chicken_code = clean_code or team_code = clean_code;
@@ -430,17 +449,44 @@ begin
 
   if clean_name is null or clean_name = '' then raise exception 'Enter a team name'; end if;
   if length(clean_name) > 40 then raise exception 'Team name is too long'; end if;
+  if exists (select 1 from unnest(names) n where length(n) > 30) then raise exception 'Keep each name under 30 characters'; end if;
+  if cardinality(names) > 12 then raise exception 'That''s a big team! 12 players at most'; end if;
 
-  -- rejoining an existing team by name (e.g. a teammate's phone, or a lost session)
+  -- rejoining an existing team by name (a teammate's phone, or a lost session): add any new names
   select id into t from teams where teams.game_id = c.game_id and lower(name) = lower(clean_name) and not removed;
   if t is null then
-    insert into teams (game_id, name) values (c.game_id, clean_name) returning id into t;
+    if cardinality(names) = 0 then raise exception 'Add at least one player'; end if;
+    insert into teams (game_id, name, players) values (c.game_id, clean_name, names) returning id into t;
     insert into alerts (game_id, team_id, kind, message)
-      values (c.game_id, t, 'joined', clean_name || ' joined the game');
+      values (c.game_id, t, 'joined', clean_name || ' joined the game (' || array_to_string(names, ', ') || ')');
+  else
+    update teams set players = chicken_private.clean_players(teams.players || names) where id = t;
   end if;
   insert into members (uid, game_id, role, team_id) values (auth.uid(), c.game_id, 'team', t);
+
+  if lat is not null then
+    update teams set last_lat = lat, last_lng = lng, last_active_at = now() where id = t;
+    insert into locations (game_id, team_id, lat, lng) values (c.game_id, t, lat, lng);
+  end if;
   return query select c.game_id, 'team'::text, t;
 end $$;
+
+
+-- change the team's player list (any phone on the team, until the game ends)
+create or replace function public.team_set_players(g uuid, players text[]) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  names text[] := chicken_private.clean_players(players);
+  t uuid := public.my_team(g);
+begin
+  if t is null then raise exception 'You are not on a team in this game'; end if;
+  if public.game_ended(g) then raise exception 'That game has finished'; end if;
+  if cardinality(names) = 0 then raise exception 'A team needs at least one player'; end if;
+  if cardinality(names) > 12 then raise exception 'That''s a big team! 12 players at most'; end if;
+  if exists (select 1 from unnest(names) n where length(n) > 30) then raise exception 'Keep each name under 30 characters'; end if;
+  update teams set players = names where id = t;
+end $$;
+
 
 -- teams can see how many teams have found the chicken, but not which
 create or replace function public.game_progress(g uuid) returns table (found int, total int)
@@ -685,7 +731,8 @@ begin
   if lat is not null then insert into locations (game_id, team_id, lat, lng) values (g, tm.id, lat, lng); end if;
 end $$;
 
--- called whenever a team has the app open; drives "nearby" and "left early" alerts
+-- called whenever a team has the app open. Positions are recorded from the moment a team joins;
+-- "nearby" and "left early" alerts only fire once the hunt is live.
 create or replace function public.report_location(g uuid, lat double precision, lng double precision) returns void
 language plpgsql security definer set search_path = public as $$
 declare
@@ -696,7 +743,7 @@ declare
   vpub pubs%rowtype;
 begin
   select * into gm from games where id = g;
-  if gm.status <> 'live' then return; end if;
+  if gm.status = 'ended' then return; end if;
   select * into tm from teams where id = public.my_team(g);
   if tm.id is null or tm.removed then return; end if;
 
@@ -706,7 +753,7 @@ begin
     insert into locations (game_id, team_id, lat, lng) values (g, tm.id, lat, lng);
   end if;
 
-  if tm.status = 'found' then return; end if;
+  if gm.status <> 'live' or tm.status = 'found' then return; end if;
 
   select pubs.* into hide from game_secrets join pubs on pubs.id = game_secrets.chicken_pub_id
     where game_secrets.game_id = g;

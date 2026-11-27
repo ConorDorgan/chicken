@@ -253,3 +253,66 @@ export function Confetti({ fire }) {
     </span>
   ));
 }
+
+// ---------------------------------------------------------------- team players
+// Chips for each name, plus a box to add more. `value` is an array of names.
+export function PlayersEditor({ value, onChange, id = 'player', autoFocus }) {
+  const [draft, setDraft] = useState('');
+  const add = () => {
+    const n = draft.trim();
+    if (!n) return;
+    if (!value.some((v) => v.toLowerCase() === n.toLowerCase())) onChange([...value, n]);
+    setDraft('');
+  };
+  return (
+    <div className="space-y-2">
+      {value.length > 0 && (
+        <ul className="flex flex-wrap gap-2" aria-label="Players">
+          {value.map((n) => (
+            <li key={n} className="pop-in inline-flex items-center gap-1 rounded-full border-2 border-hunt-edge bg-hunt/15 py-0.5 pr-1 pl-3 font-extrabold">
+              {n}
+              <button
+                type="button"
+                aria-label={`Remove ${n}`}
+                onClick={() => onChange(value.filter((v) => v !== n))}
+                className="grid size-8 place-items-center rounded-full text-muted-foreground hover:text-foreground"
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex gap-2">
+        <input
+          id={id}
+          autoFocus={autoFocus}
+          value={draft}
+          maxLength={30}
+          placeholder={value.length ? 'Add another player' : 'Player name'}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              add();
+            }
+          }}
+          className="h-12 min-w-0 flex-1 rounded-xl border-2 border-input bg-background px-4 text-lg font-semibold outline-none placeholder:text-muted-foreground focus-visible:border-ring"
+        />
+        <button
+          type="button"
+          onClick={add}
+          disabled={!draft.trim()}
+          className="sticker press min-h-12 rounded-2xl border-2 border-hunt-edge bg-hunt px-4 font-display text-lg font-bold text-hunt-ink disabled:opacity-45 [--sticker-edge:var(--hunt-edge)]"
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function PlayerList({ players, className }) {
+  if (!players?.length) return null;
+  return <p className={cn('text-sm font-semibold text-muted-foreground', className)}>👥 {players.join(', ')}</p>;
+}

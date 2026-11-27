@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import Map from '@/components/Map';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Empty, ErrorNote, Hero, Panel, PhotoGrid, Row, Rows, Screen } from '@/components/game-ui';
+import { Empty, ErrorNote, Hero, Panel, PhotoGrid, PlayerList, Row, Rows, Screen } from '@/components/game-ui';
 import { useLiveData } from '@/lib/hooks';
 import { select, supabase } from '@/lib/supabase';
 import { fmtDuration, fmtTime, signedUrls, TEAM_COLORS } from '@/lib/util';
@@ -129,8 +129,9 @@ export default function Recap({ params }) {
           <Panel
             key={t.id}
             title={<span className="inline-flex items-center gap-2"><span className="size-3.5 rounded-full" style={{ background: colorOf[t.id] }} aria-hidden />{t.name}</span>}
-            action={<Badge variant="chicken">🍺 {pints}</Badge>}
+            action={<Badge variant="chicken">🍺 {pints} each</Badge>}
           >
+            <PlayerList players={t.players} className="-mt-1 mb-2" />
             {tv.length ? (
               <ol className="space-y-1.5">
                 {tv.map((v, i) => (
@@ -152,6 +153,28 @@ export default function Recap({ params }) {
           </Panel>
         );
       })}
+
+      <Panel title="Pints per person" className="border-chick-edge">
+        {stats.people.length ? (
+          <Rows>
+            {stats.people.map((p) => (
+              <Row
+                key={p.team.id + p.name}
+                lead={<span className="font-display text-xl font-extrabold">{p.rank === 1 && p.pints > 0 ? '👑' : p.rank}</span>}
+                trail={<span className="font-display text-2xl font-extrabold tabular-nums">{p.pints} 🍺</span>}
+              >
+                <span className="block text-lg font-extrabold">{p.name}</span>
+                <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                  <span className="size-2.5 rounded-full" style={{ background: colorOf[p.team.id] }} aria-hidden />
+                  {p.team.name}
+                </span>
+              </Row>
+            ))}
+          </Rows>
+        ) : (
+          <Empty emoji="🍺">No players were named in this game.</Empty>
+        )}
+      </Panel>
 
       <Panel title="Hall of shame" className="border-alert-edge">
         {stats.shame.length ? (
@@ -242,11 +265,25 @@ function computeStats({ game, teams, visits, alerts, locations, pubs }) {
   }
   if (quiet && quiet.gap > 10 * 60000) shame.push({ e: '📵', t: `Longest gone dark: ${quiet.t.name} (${fmtDuration(quiet.gap)})` });
 
-  facts.push({ e: '🍺', v: visits.filter((v) => v.status === 'done' || v.status === 'locked').length, l: 'pints drunk' });
+  // every wrong pub is a pint for everyone on the team
+  const teamPints = (t) => visits.filter((v) => v.team_id === t.id && (v.status === 'done' || v.status === 'locked')).length;
+  const people = teams
+    .flatMap((t) => (t.players || []).map((name) => ({ name, team: t, pints: teamPints(t) })))
+    .sort((a, b) => b.pints - a.pints || a.name.localeCompare(b.name));
+  // players on the same number of pints share a place
+  for (const p of people) p.rank = 1 + people.filter((q) => q.pints > p.pints).length;
+  const totalPints = people.length
+    ? people.reduce((n, p) => n + p.pints, 0)
+    : visits.filter((v) => v.status === 'done' || v.status === 'locked').length;
+  facts.push({ e: '🍺', v: totalPints, l: 'pints drunk in total' });
+  if (people[0]?.pints > 0) {
+    const top = people.filter((p) => p.pints === people[0].pints);
+    facts.push({ e: '👑', v: people[0].pints, l: top.length > 3 ? `pints each for ${top.length} players` : `most pints: ${top.map((p) => p.name).join(', ')}` });
+  }
   const counts = teams.map((t) => [t, visits.filter((v) => v.team_id === t.id).length]).sort((a, b) => b[1] - a[1]);
   if (counts[0]?.[1]) facts.push({ e: '🗺️', v: counts[0][1], l: `most pubs: ${counts[0][0].name}` });
   const first = teams.find((t) => t.finish_position === 1);
   if (first?.found_at) facts.push({ e: '⚡', v: fmtDuration(new Date(first.found_at) - huntStart), l: `fastest find: ${first.name}` });
   if (game.started_at && game.ended_at) facts.push({ e: '⏱️', v: fmtDuration(new Date(game.ended_at) - new Date(game.started_at)), l: 'game length' });
-  return { shame, facts };
+  return { shame, facts, people };
 }
