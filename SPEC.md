@@ -34,11 +34,12 @@ There are no user accounts. Logins are codes per game, plus the admin password.
 
 ## Hunting loop (team)
 
-- The team taps **"Check in at [pub]"** and their GPS and time are recorded.
-- **No chicken there:** the team is **locked** ("Drink up"). To unlock they need **both**:
-  - an uploaded **photo of the team with empty glasses**, and
-  - the **minimum pint timer** elapsed.
-- **Chicken spotted:** the team taps **"Found the chicken"**. The claim goes to the chicken:
+- **Check in (outside):** the team taps **"Check in at [pub]"** and must take a **photo of the pub from the outside**, using the camera live rather than an upload from the gallery. The photo, GPS and time are recorded. This proves they are there. Every pub visit starts this way, including the chicken's pub.
+- The team then goes inside and either finds the chicken or doesn't.
+- **No chicken there:** the team taps "No chicken here" and is **locked** ("Drink up"). To leave they need **both**:
+  - a **photo of the empty pints**, taken as they leave (camera only), and
+  - the **minimum pint timer** elapsed, counted from the outside check-in photo.
+- **Chicken spotted:** the team taps **"Found the chicken"** (after checking in outside). The claim goes to the chicken:
   - **Confirm:** the team gets their finishing position and switches to the "You're in, wait for the rest" screen (with a feed of other teams' pint photos).
   - **Reject:** "The chicken says no 🐔❌". The claim is logged, the pub counts as checked with no chicken, the team is locked, and they owe a pint.
   - **No response:** the claim stays **Pending** and the team waits. Claims are never auto-confirmed.
@@ -74,7 +75,7 @@ There are no user accounts. Logins are codes per game, plus the admin password.
 - Map with all team positions and last-active times
 - Pending claims pinned at the top, with confirm or reject
 - Alerts feed (nearby, left early)
-- Pint photo feed
+- Photo feed (outside check-in photos and empty-pint photos)
 - Send a clue, Shrink now
 - Fix-it tools: remove a team, undo a wrong find, end the game
 
@@ -95,14 +96,14 @@ There are no user accounts. Logins are codes per game, plus the admin password.
 - Finishing order with times. The last team is the loser.
 - Each team's route, pubs in order, and pints drunk
 - Hall of shame: early-leaving alerts, longest time inactive, slowest pint, rejected claims
-- Photo wall of every pint photo
+- Photo wall: every outside check-in photo and empty-pint photo
 - Stats: total pints, most pubs checked, fastest find
 - All clues sent
 
 ## Tech
 
 - **Frontend:** React + Vite, mobile-first and installable to the home screen, hosted on **Vercel**.
-- **Backend:** **Supabase**, which provides the Postgres database, realtime (chicken map, alerts, zone, clues), storage (pint photos) and row-level security.
+- **Backend:** **Supabase**, which provides the Postgres database, realtime (chicken map, alerts, zone, clues), storage (check-in and pint photos) and row-level security.
 - **Secrecy:** the chicken's pub and team locations are readable only with the chicken code. They are revealed to everyone at game end. This is honour-level: anyone with database access could still look.
 - **Maps:** Leaflet + OpenStreetMap, with no API key.
 - **Push:** Web Push to the chicken (and teams, for zone and clue notifications).
