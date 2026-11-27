@@ -1,6 +1,11 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { ArrowRight, RotateCcw } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { ErrorNote, Screen } from '@/components/game-ui';
 import { rpc } from '@/lib/supabase';
 import { lastGame, rememberGame } from '@/lib/util';
 
@@ -36,59 +41,60 @@ export default function Home() {
   }
 
   return (
-    <>
-      <div className="center" style={{ fontSize: 72, marginTop: 24 }}>🐔</div>
-      <h1 className="center">Find the Chicken</h1>
-      <p className="center muted">One chicken. A city of pubs. A pint at every wrong door.</p>
+    <Screen>
+      <section className="pt-6 pb-8 text-center">
+        <div className="bob mb-2 text-8xl" aria-hidden>🐔</div>
+        <h1 className="text-5xl font-extrabold">
+          Find the{' '}
+          <span className="sticker mt-1 inline-block -rotate-2 rounded-2xl border-2 border-chick-edge bg-chick px-3 text-chick-ink [--sticker-edge:var(--chick-edge)]">Chicken</span>
+        </h1>
+        <p className="mx-auto mt-2 max-w-xs text-lg font-semibold text-muted-foreground">
+          One chicken. A city of pubs. A pint at every wrong door.
+        </p>
+      </section>
 
       {resume && (
-        <div className="card">
-          <p>You were in a game on this phone.</p>
-          <button
-            className="btn btn-block"
-            onClick={() => router.push(`/game/${resume.gameId}/${resume.role === 'chicken' ? 'chicken' : 'team'}`)}
-          >
-            Back to my game
-          </button>
-        </div>
+        <Button
+          variant="secondary"
+          block
+          className="mb-4"
+          onClick={() => router.push(`/game/${resume.gameId}/${resume.role === 'chicken' ? 'chicken' : 'team'}`)}
+        >
+          <RotateCcw aria-hidden /> Back to my game
+        </Button>
       )}
 
-      <form className="card stack" onSubmit={join}>
-        <div>
-          <label htmlFor="code">Game code</label>
-          <input
+      <form onSubmit={join} className="pop-in sticker space-y-4 rounded-3xl border-2 bg-card p-5">
+        <div className="space-y-2">
+          <Label htmlFor="code" className="text-base font-extrabold">Game code</Label>
+          <Input
             id="code"
-            type="text"
             autoCapitalize="characters"
             autoComplete="off"
             placeholder="CLUCK-XXXX"
             value={code}
             onChange={(e) => setCode(e.target.value.toUpperCase())}
+            className="font-display text-2xl tracking-widest uppercase"
           />
         </div>
         {isTeamCode && (
-          <div>
-            <label htmlFor="name">Team name</label>
-            <input
-              id="name"
-              type="text"
-              placeholder="e.g. Beer Goggles"
-              maxLength={40}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-            <p className="small muted">Joining from a second phone? Use the exact same team name.</p>
+          <div className="pop-in space-y-2">
+            <Label htmlFor="name" className="text-base font-extrabold">Team name</Label>
+            <Input id="name" placeholder="e.g. Beer Goggles" maxLength={40} value={name} onChange={(e) => setName(e.target.value)} />
+            <p className="text-sm font-semibold text-muted-foreground">Joining on a second phone? Type the exact same team name.</p>
           </div>
         )}
-        {error && <div className="err">{error}</div>}
-        <button className="btn btn-primary btn-block" disabled={busy || !code.trim() || (isTeamCode && !name.trim())}>
-          {busy ? 'Joining…' : 'Join'}
-        </button>
+        <ErrorNote>{error}</ErrorNote>
+        <Button size="lg" block disabled={busy || !code.trim() || (isTeamCode && !name.trim())}>
+          {busy ? 'Joining…' : 'Join the hunt'} <ArrowRight aria-hidden />
+        </Button>
       </form>
 
-      <p className="center small muted" style={{ marginTop: 32 }}>
-        <a href="/admin">Admin</a>
+      <p className="mt-10 text-center">
+        <a href="/admin" className="inline-flex min-h-11 items-center px-3 text-sm font-bold text-muted-foreground underline-offset-4 hover:underline">
+          Admin
+        </a>
       </p>
-    </>
+    </Screen>
   );
 }

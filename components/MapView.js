@@ -65,13 +65,15 @@ export default function MapView({
     const bounds = [];
 
     if (zone) {
+      const alert = getComputedStyle(document.documentElement).getPropertyValue('--alert').trim() || '#ff5a7a';
       Lf.circle([zone.center_lat, zone.center_lng], {
         radius: zone.radius_m,
-        color: '#e5484d',
-        weight: 3,
-        fillColor: '#e5484d',
-        fillOpacity: 0.06,
-        dashArray: '8 6',
+        color: alert,
+        weight: 4,
+        fillColor: alert,
+        fillOpacity: 0.07,
+        dashArray: '10 8',
+        className: 'zone-ring',
       }).addTo(layer.current);
     }
 
@@ -84,10 +86,10 @@ export default function MapView({
     for (const p of pubs) {
       const icon = Lf.divIcon({
         className: '',
-        html: `<div class="pin ${p.dim ? 'pin-dim' : ''} ${p.highlight ? 'pin-hi' : ''}">${p.icon || '🍺'}</div>
+        html: `<div class="pin ${p.tone ? 'pin-' + p.tone : ''} ${p.dim ? 'pin-dim' : ''} ${p.highlight ? 'pin-hi' : ''}">${p.icon || '🍺'}</div>
                <div class="pin-label ${p.dim ? 'pin-dim' : ''}">${escapeHtml(p.name)}</div>`,
-        iconSize: [34, 34],
-        iconAnchor: [17, 17],
+        iconSize: [36, 36],
+        iconAnchor: [18, 18],
       });
       const m = Lf.marker([p.lat, p.lng], { icon }).addTo(layer.current);
       m.on('click', (e) => {
@@ -101,7 +103,7 @@ export default function MapView({
       if (t.lat == null) continue;
       const icon = Lf.divIcon({
         className: '',
-        html: `<div class="person ${t.stale ? 'person-stale' : ''} ${t.me ? 'person-me' : ''}">${escapeHtml(
+        html: `<div class="person ${t.stale ? 'person-stale' : ''} ${t.me ? 'person-me' : ''}" style="${t.color ? '--person:' + t.color : ''}">${escapeHtml(
           t.label
         )}</div>`,
         iconSize: [0, 0],
@@ -118,7 +120,7 @@ export default function MapView({
     }
   }
 
-  return <div ref={el} className="map" style={{ height }} />;
+  return <div ref={el} className="sticker z-0 w-full overflow-hidden rounded-3xl border-2" style={{ height }} role="region" aria-label="Map" />;
 }
 
 function escapeHtml(s) {
