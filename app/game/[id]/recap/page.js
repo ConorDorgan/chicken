@@ -1,11 +1,14 @@
 'use client';
-import { use, useMemo, useState } from 'react';
+import { use, useMemo } from 'react';
+import { Link2 } from 'lucide-react';
+import { toast } from 'sonner';
 import Map from '@/components/Map';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Empty, ErrorNote, Hero, Panel, PhotoGrid, Row, Rows, Screen } from '@/components/game-ui';
 import { useLiveData } from '@/lib/hooks';
 import { select, supabase } from '@/lib/supabase';
-import { fmtDuration, fmtTime, signedUrls } from '@/lib/util';
-
-const COLORS = ['#3e8ed0', '#e5484d', '#46a758', '#8e4ec6', '#f76b15', '#12a594', '#d6409f', '#978365'];
+import { fmtDuration, fmtTime, signedUrls, TEAM_COLORS } from '@/lib/util';
 
 async function loadRecap(gameId) {
   const sb = supabase();
@@ -20,34 +23,33 @@ async function loadRecap(gameId) {
     select(sb.from('locations').select('team_id, at').eq('game_id', gameId).order('at').limit(10000)),
   ]);
   const photos = game.status === 'ended' ? await signedUrls(visits.flatMap((v) => [v.arrive_photo, v.leave_photo])) : {};
-  return {
-    game,
-    secret,
-    pubs: pubs.map((r) => r.pubs).filter(Boolean),
-    teams: teams.filter((t) => !t.removed),
-    visits,
-    alerts,
-    clues,
-    locations,
-    photos,
-  };
+  return { game, secret, pubs: pubs.map((r) => r.pubs).filter(Boolean), teams: teams.filter((t) => !t.removed), visits, alerts, clues, locations, photos };
 }
+
+const MEDAL = { 1: '🥇', 2: '🥈', 3: '🥉' };
 
 export default function Recap({ params }) {
   const { id } = use(params);
   const { data, error } = useLiveData(id, ['games'], () => loadRecap(id), 60000);
-  const [copied, setCopied] = useState(false);
-
   const stats = useMemo(() => (data ? computeStats(data) : null), [data]);
 
-  if (error && !data) return <div className="err">{error} <a href="/">Home</a></div>;
-  if (!data) return <p className="muted">Loading…</p>;
+  if (error && !data) {
+    return (
+      <Screen>
+        <ErrorNote>{error}</ErrorNote>
+        <Button variant="secondary" asChild><a href="/">Go home</a></Button>
+      </Screen>
+    );
+  }
+  if (!data) return <Screen><p className="pt-10 text-center font-bold text-muted-foreground">Loading…</p></Screen>;
   if (data.game.status !== 'ended') {
     return (
-      <div className="card center">
-        <p>This game is still going. The recap appears when it ends.</p>
-        <a href="/">Home</a>
-      </div>
+      <Screen>
+        <Hero tone="plain" emoji="⏳" title="Still hunting">
+          <p className="font-semibold text-muted-foreground">The recap appears here when the last team finds the chicken.</p>
+          <Button variant="secondary" asChild><a href="/">Go home</a></Button>
+        </Hero>
+      </Screen>
     );
   }
 
@@ -55,7 +57,7 @@ export default function Recap({ params }) {
   const pubById = Object.fromEntries(pubs.map((p) => [p.id, p]));
   const teamById = Object.fromEntries(teams.map((t) => [t.id, t]));
   const hide = pubById[data.secret?.chicken_pub_id];
-  const colorOf = Object.fromEntries(teams.map((t, i) => [t.id, COLORS[i % COLORS.length]]));
+  const colorOf = Object.fromEntries(teams.map((t, i) => [t.id, TEAM_COLORS[i % TEAM_COLORS.length]]));
   const start = new Date(game.hunt_starts_at || game.started_at || game.created_at).getTime();
 
   const order = [...teams].sort((a, b) => (a.finish_position ?? 999) - (b.finish_position ?? 999));
@@ -67,122 +69,143 @@ export default function Recap({ params }) {
     points: visits.filter((v) => v.team_id === t.id).map((v) => [pubById[v.pub_id]?.lat, pubById[v.pub_id]?.lng]).filter((p) => p[0] != null),
   }));
 
+  const photoItems = visits.flatMap((v) =>
+    [
+      v.arrive_photo && { src: photos[v.arrive_photo], cap: `📍 ${teamById[v.team_id]?.name} at ${pubById[v.pub_id]?.name}`, k: v.id + 'a' },
+      v.leave_photo && { src: photos[v.leave_photo], cap: `🍺 ${teamById[v.team_id]?.name} leaving ${pubById[v.pub_id]?.name}`, k: v.id + 'l' },
+    ].filter(Boolean)
+  );
+
   return (
-    <>
-      <div className="center" style={{ fontSize: 56, marginTop: 12 }}>🐔</div>
-      <h1 className="center">The chicken was in {hide?.name || '…'}</h1>
-      <p className="center muted small">
-        {game.started_at && `${new Date(game.started_at).toLocaleDateString()} · ${fmtTime(game.started_at)}–${fmtTime(game.ended_at)}`}
-      </p>
+    <Screen>
+      <Hero tone="chicken" emoji="🐔" kicker="The chicken was in…" title={hide?.name || 'a secret pub'}>
+        {game.started_at && (
+          <p className="font-bold">
+            {new Date(game.started_at).toLocaleDateString()} · {fmtTime(game.started_at)} to {fmtTime(game.ended_at)}
+          </p>
+        )}
+      </Hero>
 
       <Map
-        height="50vh"
-        pubs={pubs.map((p) => ({ ...p, icon: p.id === hide?.id ? '🐔' : '🍺', highlight: p.id === hide?.id }))}
+        height="46vh"
+        pubs={pubs.map((p) => ({ ...p, icon: p.id === hide?.id ? '🐔' : '🍺', tone: p.id === hide?.id ? 'chicken' : '' }))}
         routes={routes}
       />
-      <div className="row small" style={{ marginTop: 6 }}>
+      <div className="mt-3 mb-4 flex flex-wrap gap-2">
         {teams.map((t) => (
-          <span key={t.id}><span style={{ color: colorOf[t.id] }}>●</span> {t.name}</span>
+          <span key={t.id} className="inline-flex items-center gap-1.5 rounded-full border-2 bg-card px-3 py-0.5 text-sm font-extrabold" style={{ borderColor: colorOf[t.id] }}>
+            <span className="size-2.5 rounded-full" style={{ background: colorOf[t.id] }} aria-hidden />
+            {t.name}
+          </span>
         ))}
       </div>
 
-      <h2>Finishing order</h2>
-      <ul className="list card">
-        {order.map((t) => {
-          const isLoser = unfound.length ? false : t.finish_position === lastFound && teams.length > 1;
-          return (
-            <li key={t.id} className="row">
-              <b style={{ width: 28 }}>{t.finish_position ? `${t.finish_position}.` : '–'}</b>
-              <span className="grow">
-                {t.name} {isLoser && <span className="badge badge-red">Last! Buys the round</span>}
-              </span>
-              <span className="small muted">{t.found_at ? fmtDuration(new Date(t.found_at) - start) : 'didn’t find'}</span>
-            </li>
-          );
-        })}
-      </ul>
-      {unfound.length > 0 && <p className="small muted">The game ended before {unfound.map((t) => t.name).join(', ')} found the chicken.</p>}
+      <Panel title="Finishing order">
+        <Rows>
+          {order.map((t) => {
+            const isLoser = !unfound.length && t.finish_position === lastFound && teams.length > 1;
+            return (
+              <Row
+                key={t.id}
+                lead={<span className="font-display text-2xl font-extrabold">{MEDAL[t.finish_position] || t.finish_position || '–'}</span>}
+                trail={<span className="text-sm font-bold text-muted-foreground">{t.found_at ? fmtDuration(new Date(t.found_at) - start) : 'didn’t find'}</span>}
+              >
+                <span className="block text-lg font-extrabold">{t.name}</span>
+                {isLoser && <Badge variant="alert">Last in · buys the round</Badge>}
+              </Row>
+            );
+          })}
+        </Rows>
+        {unfound.length > 0 && (
+          <p className="mt-2 text-sm font-semibold text-muted-foreground">The game ended before {unfound.map((t) => t.name).join(', ')} found the chicken.</p>
+        )}
+      </Panel>
 
-      <h2>Routes</h2>
+      <h2 className="mt-6 mb-3 text-xl font-extrabold">Routes</h2>
       {teams.map((t) => {
         const tv = visits.filter((v) => v.team_id === t.id);
         const pints = tv.filter((v) => v.status === 'done' || v.status === 'locked').length;
         return (
-          <div key={t.id} className="card">
-            <b style={{ color: colorOf[t.id] }}>{t.name}</b> <span className="small muted">· {pints} pint{pints === 1 ? '' : 's'}</span>
-            <ol className="small" style={{ margin: '6px 0 0', paddingLeft: 20 }}>
-              {tv.map((v) => (
-                <li key={v.id}>
-                  {pubById[v.pub_id]?.name} <span className="muted">{fmtTime(v.arrived_at)}</span>
-                  {v.status === 'found' && ' 🐔'}
-                  {v.rejected && ' ❌ wrong claim'}
-                  {v.left_early_flagged && ' 🏃 left early'}
-                </li>
-              ))}
-              {!tv.length && <li className="muted">Never checked in anywhere 🤔</li>}
-            </ol>
-          </div>
+          <Panel
+            key={t.id}
+            title={<span className="inline-flex items-center gap-2"><span className="size-3.5 rounded-full" style={{ background: colorOf[t.id] }} aria-hidden />{t.name}</span>}
+            action={<Badge variant="chicken">🍺 {pints}</Badge>}
+          >
+            {tv.length ? (
+              <ol className="space-y-1.5">
+                {tv.map((v, i) => (
+                  <li key={v.id} className="flex items-baseline gap-2 font-semibold">
+                    <span className="w-5 shrink-0 text-sm font-extrabold text-muted-foreground">{i + 1}</span>
+                    <span className="flex-1">
+                      {pubById[v.pub_id]?.name}
+                      {v.status === 'found' && ' 🐔'}
+                      {v.rejected && <Badge variant="alert" className="ml-1">wrong claim</Badge>}
+                      {v.left_early_flagged && <Badge variant="clue" className="ml-1">left early</Badge>}
+                    </span>
+                    <span className="text-sm font-bold text-muted-foreground">{fmtTime(v.arrived_at)}</span>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <Empty emoji="🤔">Never checked in anywhere.</Empty>
+            )}
+          </Panel>
         );
       })}
 
-      <h2>Hall of shame</h2>
-      <ul className="list card">
-        {stats.shame.map((s, i) => (
-          <li key={i}>{s}</li>
-        ))}
-        {!stats.shame.length && <li className="muted">Suspiciously well behaved.</li>}
-      </ul>
+      <Panel title="Hall of shame" className="border-alert-edge">
+        {stats.shame.length ? (
+          <Rows>
+            {stats.shame.map((s, i) => (
+              <Row key={i} lead={s.e}><span className="font-bold">{s.t}</span></Row>
+            ))}
+          </Rows>
+        ) : (
+          <Empty emoji="😇">Suspiciously well behaved.</Empty>
+        )}
+      </Panel>
 
-      <h2>Stats</h2>
-      <div className="card">
-        <ul className="list">
-          {stats.facts.map((s, i) => (
-            <li key={i}>{s}</li>
-          ))}
-        </ul>
+      <div className="mb-4 grid grid-cols-2 gap-3">
+        {stats.facts.map((f, i) => (
+          <div key={i} className="pop-in sticker rounded-3xl border-2 bg-card p-4">
+            <div className="text-2xl" aria-hidden>{f.e}</div>
+            <div className="font-display text-3xl font-extrabold">{f.v}</div>
+            <div className="text-sm font-bold text-muted-foreground">{f.l}</div>
+          </div>
+        ))}
       </div>
 
       {clues.length > 0 && (
-        <>
-          <h2>Clues</h2>
-          <ul className="list card">
+        <Panel title="Clues" className="border-clue-edge">
+          <Rows>
             {clues.map((c) => (
-              <li key={c.id} className="row">
-                <span className="grow">{c.text}</span>
-                <span className="small muted">{fmtTime(c.created_at)}</span>
-              </li>
+              <Row key={c.id} lead="💬" trail={<span className="text-sm font-bold text-muted-foreground">{fmtTime(c.created_at)}</span>}>
+                <span className="font-semibold">{c.text}</span>
+              </Row>
             ))}
-          </ul>
-        </>
+          </Rows>
+        </Panel>
       )}
 
-      <h2>Photo wall</h2>
-      <div className="feed">
-        {visits.flatMap((v) =>
-          [
-            v.arrive_photo && { src: photos[v.arrive_photo], cap: `📍 ${teamById[v.team_id]?.name} at ${pubById[v.pub_id]?.name}`, k: v.id + 'a' },
-            v.leave_photo && { src: photos[v.leave_photo], cap: `🍺 ${teamById[v.team_id]?.name} leaving ${pubById[v.pub_id]?.name}`, k: v.id + 'l' },
-          ].filter(Boolean)
-        ).map((p) => (
-          <figure key={p.k}>
-            {p.src ? <img src={p.src} alt="" loading="lazy" /> : <div style={{ aspectRatio: 1 }} />}
-            <figcaption>{p.cap}</figcaption>
-          </figure>
-        ))}
-      </div>
+      <h2 className="mt-6 mb-3 text-xl font-extrabold">Photo wall</h2>
+      <PhotoGrid items={photoItems} empty="No photos from this game." />
 
-      <div className="spacer" />
-      <button
-        className="btn btn-primary btn-block"
+      <Button
+        size="lg"
+        block
+        variant="chicken"
+        className="mt-6"
         onClick={() => {
           navigator.clipboard?.writeText(window.location.href);
-          setCopied(true);
+          toast.success('Recap link copied. Paste it in the group chat.');
         }}
       >
-        {copied ? 'Link copied' : 'Copy recap link'}
-      </button>
-      <p className="center small"><a href="/">Home</a></p>
-    </>
+        <Link2 aria-hidden /> Copy recap link
+      </Button>
+      <p className="mt-4 text-center">
+        <a href="/" className="inline-flex min-h-11 items-center px-3 font-bold text-muted-foreground">Home</a>
+      </p>
+    </Screen>
   );
 }
 
@@ -194,9 +217,9 @@ function computeStats({ game, teams, visits, alerts, locations, pubs }) {
 
   for (const t of teams) {
     const early = alerts.filter((a) => a.kind === 'left_early' && a.team_id === t.id).length;
-    if (early) shame.push(`🏃 ${t.name} left early ${early} time${early > 1 ? 's' : ''}`);
+    if (early) shame.push({ e: '🏃', t: `${t.name} left early ${early} time${early > 1 ? 's' : ''}` });
     const wrong = visits.filter((v) => v.team_id === t.id && v.rejected).length;
-    if (wrong) shame.push(`❌ ${t.name} wrongly claimed to find the chicken ${wrong} time${wrong > 1 ? 's' : ''}`);
+    if (wrong) shame.push({ e: '❌', t: `${t.name} wrongly claimed the chicken ${wrong} time${wrong > 1 ? 's' : ''}` });
   }
 
   const pints = visits.filter((v) => v.left_at);
@@ -204,9 +227,8 @@ function computeStats({ game, teams, visits, alerts, locations, pubs }) {
     const d = new Date(v.left_at) - new Date(v.arrived_at);
     return !m || d > m.d ? { v, d } : m;
   }, null);
-  if (slowest) shame.push(`🐢 Slowest pint: ${name(slowest.v.team_id)} at ${pubName(slowest.v.pub_id)} (${fmtDuration(slowest.d)})`);
+  if (slowest) shame.push({ e: '🐢', t: `Slowest pint: ${name(slowest.v.team_id)} at ${pubName(slowest.v.pub_id)} (${fmtDuration(slowest.d)})` });
 
-  // longest gap between location pings while the hunt was on
   const huntStart = new Date(game.hunt_starts_at || 0).getTime();
   const huntEnd = new Date(game.ended_at || Date.now()).getTime();
   let quiet = null;
@@ -218,15 +240,13 @@ function computeStats({ game, teams, visits, alerts, locations, pubs }) {
       if (!quiet || gap > quiet.gap) quiet = { t, gap };
     }
   }
-  if (quiet && quiet.gap > 10 * 60000) shame.push(`📵 Longest gone dark: ${quiet.t.name} (${fmtDuration(quiet.gap)})`);
+  if (quiet && quiet.gap > 10 * 60000) shame.push({ e: '📵', t: `Longest gone dark: ${quiet.t.name} (${fmtDuration(quiet.gap)})` });
 
-  const totalPints = visits.filter((v) => v.status === 'done' || v.status === 'locked').length;
-  facts.push(`🍺 Pints drunk: ${totalPints}`);
+  facts.push({ e: '🍺', v: visits.filter((v) => v.status === 'done' || v.status === 'locked').length, l: 'pints drunk' });
   const counts = teams.map((t) => [t, visits.filter((v) => v.team_id === t.id).length]).sort((a, b) => b[1] - a[1]);
-  if (counts[0]?.[1]) facts.push(`🗺️ Most pubs checked: ${counts[0][0].name} (${counts[0][1]})`);
-  const first = teams.filter((t) => t.finish_position === 1)[0];
-  if (first?.found_at) facts.push(`⚡ Fastest find: ${first.name} in ${fmtDuration(new Date(first.found_at) - huntStart)}`);
-  if (game.started_at && game.ended_at) facts.push(`⏱️ Game length: ${fmtDuration(new Date(game.ended_at) - new Date(game.started_at))}`);
-  facts.push(`📍 Pubs in play: ${pubs.length}`);
+  if (counts[0]?.[1]) facts.push({ e: '🗺️', v: counts[0][1], l: `most pubs: ${counts[0][0].name}` });
+  const first = teams.find((t) => t.finish_position === 1);
+  if (first?.found_at) facts.push({ e: '⚡', v: fmtDuration(new Date(first.found_at) - huntStart), l: `fastest find: ${first.name}` });
+  if (game.started_at && game.ended_at) facts.push({ e: '⏱️', v: fmtDuration(new Date(game.ended_at) - new Date(game.started_at)), l: 'game length' });
   return { shame, facts };
 }

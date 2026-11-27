@@ -1,8 +1,10 @@
 'use client';
 import { useRef, useState } from 'react';
+import { Camera, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 // Opens the phone's camera directly (capture="environment") and hands back the file.
-export default function PhotoButton({ label, onPhoto, disabled, className = 'btn btn-primary' }) {
+export default function PhotoButton({ label, onPhoto, disabled, variant = 'chicken', size = 'lg', block = true }) {
   const input = useRef(null);
   const [busy, setBusy] = useState(false);
 
@@ -20,17 +22,11 @@ export default function PhotoButton({ label, onPhoto, disabled, className = 'btn
 
   return (
     <>
-      <button className={className} disabled={disabled || busy} onClick={() => input.current?.click()}>
-        {busy ? 'Uploading…' : `📷 ${label}`}
-      </button>
-      <input
-        ref={input}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        style={{ display: 'none' }}
-        onChange={onChange}
-      />
+      <Button variant={variant} size={size} block={block} disabled={disabled || busy} onClick={() => input.current?.click()}>
+        {busy ? <Loader2 className="animate-spin" aria-hidden /> : <Camera aria-hidden />}
+        {busy ? 'Uploading…' : label}
+      </Button>
+      <input ref={input} type="file" accept="image/*" capture="environment" className="hidden" onChange={onChange} />
     </>
   );
 }

@@ -1,8 +1,16 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { Beer, Copy, Flag, KeyRound, LogOut, MapPin, Plus, Search, Settings2, Trash2, Trophy } from 'lucide-react';
 import Map from '@/components/Map';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Empty, ErrorNote, Panel, Row, Rows, Screen, TabBar, TopBar, useConfirm } from '@/components/game-ui';
 import { ensureSession, rpc, select, supabase } from '@/lib/supabase';
 import { fmtTime } from '@/lib/util';
+import { toast } from 'sonner';
 
 export default function Admin() {
   const [state, setState] = useState('loading'); // loading | login | in
@@ -22,27 +30,25 @@ export default function Admin() {
     })();
   }, []);
 
-  if (state === 'loading') return <p className="muted">Loading…</p>;
+  if (state === 'loading') return <Screen><p className="pt-10 text-center font-bold text-muted-foreground">Loading…</p></Screen>;
   if (state === 'login') return <Login onIn={() => setState('in')} initialError={error} />;
 
   return (
-    <>
-      <div className="row">
-        <h1 className="grow">🐔 Admin</h1>
-        <a href="/" className="small">Home</a>
-      </div>
-      <p className="small muted">You set things up here before the game. Nothing here shows where the chicken is.</p>
-      <div className="tabs">
-        {['games', 'pubs', 'settings'].map((t) => (
-          <button key={t} className={`btn tab ${tab === t ? 'tab-on' : ''}`} onClick={() => setTab(t)}>
-            {t[0].toUpperCase() + t.slice(1)}
-          </button>
-        ))}
-      </div>
+    <Screen tabs>
+      <TopBar emoji="🛠️" tone="plain" title="Admin" sub="Set up before the game. The chicken’s pub never shows here." />
       {tab === 'games' && <Games />}
       {tab === 'pubs' && <Pubs />}
       {tab === 'settings' && <Settings onLogout={() => setState('login')} />}
-    </>
+      <TabBar
+        value={tab}
+        onChange={setTab}
+        items={[
+          { key: 'games', label: 'Games', icon: Trophy },
+          { key: 'pubs', label: 'Pubs', icon: Beer },
+          { key: 'settings', label: 'Settings', icon: Settings2 },
+        ]}
+      />
+    </Screen>
   );
 }
 
@@ -57,27 +63,34 @@ function Login({ onIn, initialError }) {
     try {
       const ok = await rpc('admin_login', { password: pw });
       if (ok) onIn();
-      else setError('Wrong password');
+      else setError('That password isn’t right. Check with whoever set up the game.');
     } catch (err) {
       setError(err.message);
     }
     setBusy(false);
   }
   return (
-    <form className="card stack" onSubmit={submit} style={{ marginTop: 48 }}>
-      <h1>Admin login</h1>
-      <input type="password" placeholder="Admin password" value={pw} onChange={(e) => setPw(e.target.value)} />
-      {error && <div className="err">{error}</div>}
-      <button className="btn btn-primary btn-block" disabled={busy || !pw}>Log in</button>
-      <p className="small muted"><a href="/">Back</a></p>
-    </form>
+    <Screen>
+      <form onSubmit={submit} className="pop-in sticker mt-12 space-y-4 rounded-3xl border-2 bg-card p-5">
+        <div className="text-5xl" aria-hidden>🛠️</div>
+        <h1 className="text-3xl font-extrabold">Admin login</h1>
+        <div className="space-y-2">
+          <Label htmlFor="pw" className="text-base font-extrabold">Password</Label>
+          <Input id="pw" type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
+        </div>
+        <ErrorNote>{error}</ErrorNote>
+        <Button size="lg" block disabled={busy || !pw}><KeyRound aria-hidden /> Log in</Button>
+        <a href="/" className="inline-flex min-h-11 items-center font-bold text-muted-foreground">← Back</a>
+      </form>
+    </Screen>
   );
 }
 
 // ---------------------------------------------------------------- pubs
 function Pubs() {
+  const ask = useConfirm();
   const [pubs, setPubs] = useState([]);
-  const [draft, setDraft] = useState(null); // {lat,lng}
+  const [draft, setDraft] = useState(null);
   const [name, setName] = useState('');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -99,7 +112,6 @@ function Pubs() {
     if (!query.trim()) return;
     setError(null);
     try {
-      // OpenStreetMap search, biased to the area the pubs are already in
       const params = new URLSearchParams({ q: query, format: 'json', limit: '6' });
       if (pubs.length) {
         const lats = pubs.map((p) => p.lat);
@@ -108,9 +120,11 @@ function Pubs() {
         params.set('viewbox', `${Math.min(...lngs) - pad},${Math.max(...lats) + pad},${Math.max(...lngs) + pad},${Math.min(...lats) - pad}`);
       }
       const r = await fetch(`https://nominatim.openstreetmap.org/search?${params}`);
-      setResults(await r.json());
+      const json = await r.json();
+      setResults(json);
+      if (!json.length) setError('No matches. Try the street name too, or tap the map to drop a pin.');
     } catch {
-      setError('Search failed. Tap the map to drop a pin instead.');
+      setError('Search isn’t responding. Tap the map to drop a pin instead.');
     }
   }
 
@@ -124,6 +138,7 @@ function Pubs() {
     setError(null);
     try {
       await select(supabase().from('pubs').insert({ name: name.trim(), lat: draft.lat, lng: draft.lng }));
+      toast.success(`${name.trim()} added`);
       setDraft(null);
       setName('');
       setQuery('');
@@ -134,7 +149,13 @@ function Pubs() {
   }
 
   async function remove(p) {
-    if (!confirm(`Delete ${p.name}? It will also be removed from any games that use it.`)) return;
+    const ok = await ask({
+      title: `Delete ${p.name}?`,
+      body: 'It also disappears from any games that use it, including their history.',
+      action: 'Delete pub',
+      variant: 'alert',
+    });
+    if (!ok) return;
     try {
       await select(supabase().from('pubs').delete().eq('id', p.id));
       load();
@@ -148,50 +169,60 @@ function Pubs() {
 
   return (
     <>
-      <h2>Pubs ({pubs.length})</h2>
-      <form className="row" onSubmit={search}>
-        <input className="grow" type="text" placeholder="Search for a pub…" value={query} onChange={(e) => setQuery(e.target.value)} />
-        <button className="btn">Search</button>
+      <form className="mb-3 flex gap-2" onSubmit={search}>
+        <Input className="flex-1" placeholder="Search for a pub…" aria-label="Search for a pub" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <Button size="icon" variant="secondary" aria-label="Search"><Search aria-hidden /></Button>
       </form>
       {results.length > 0 && (
-        <ul className="list card">
-          {results.map((r) => (
-            <li key={r.place_id}>
-              <button className="btn btn-ghost btn-sm" onClick={() => pick(r)} style={{ textAlign: 'left' }}>
-                {r.display_name}
-              </button>
-            </li>
-          ))}
-        </ul>
+        <Panel>
+          <Rows>
+            {results.map((r) => (
+              <Row key={r.place_id} lead="📍">
+                <button className="min-h-11 w-full text-left font-semibold" onClick={() => pick(r)}>{r.display_name}</button>
+              </Row>
+            ))}
+          </Rows>
+        </Panel>
       )}
-      <p className="small muted">Or tap the map to drop a pin.</p>
+      <p className="mb-2 text-sm font-semibold text-muted-foreground">Or tap the map to drop a pin.</p>
       <Map pubs={mapPubs} onMapClick={(ll) => setDraft(ll)} fitKey={pubs.length} />
       {draft && (
-        <div className="card card-hi stack">
-          <label htmlFor="pubname">Pub name</label>
-          <input id="pubname" type="text" value={name} onChange={(e) => setName(e.target.value)} />
-          <div className="row">
-            <button className="btn btn-primary grow" disabled={!name.trim()} onClick={add}>Add pub</button>
-            <button className="btn" onClick={() => setDraft(null)}>Cancel</button>
+        <Panel className="mt-4 border-chick-edge">
+          <div className="space-y-3">
+            <Label htmlFor="pubname" className="text-base font-extrabold">Pub name</Label>
+            <Input id="pubname" value={name} onChange={(e) => setName(e.target.value)} />
+            <div className="flex gap-2">
+              <Button className="flex-1" variant="found" disabled={!name.trim()} onClick={add}><Plus aria-hidden /> Add pub</Button>
+              <Button variant="secondary" onClick={() => setDraft(null)}>Cancel</Button>
+            </div>
           </div>
-        </div>
+        </Panel>
       )}
-      {error && <div className="err">{error}</div>}
-      <ul className="list card">
-        {pubs.map((p) => (
-          <li key={p.id} className="row">
-            <span className="grow">{p.name}</span>
-            <button className="btn btn-sm" onClick={() => remove(p)}>Delete</button>
-          </li>
-        ))}
-        {!pubs.length && <li className="muted">No pubs yet.</li>}
-      </ul>
+      <ErrorNote>{error}</ErrorNote>
+      <Panel title={`Pubs (${pubs.length})`} className="mt-4">
+        {pubs.length ? (
+          <Rows>
+            {pubs.map((p) => (
+              <Row
+                key={p.id}
+                lead="🍺"
+                trail={<Button size="icon" variant="ghost" aria-label={`Delete ${p.name}`} onClick={() => remove(p)}><Trash2 aria-hidden /></Button>}
+              >
+                <span className="font-bold">{p.name}</span>
+              </Row>
+            ))}
+          </Rows>
+        ) : (
+          <Empty emoji="🍺">Add your first pub: search above or tap the map.</Empty>
+        )}
+      </Panel>
     </>
   );
 }
 
 // ---------------------------------------------------------------- games
 function Games() {
+  const ask = useConfirm();
   const [pubs, setPubs] = useState([]);
   const [chosen, setChosen] = useState(new Set());
   const [games, setGames] = useState([]);
@@ -240,7 +271,13 @@ function Games() {
   }
 
   async function forceEnd(g) {
-    if (!confirm('Force-end this game? Everyone will see the recap and the chicken’s pub.')) return;
+    const ok = await ask({
+      title: 'End this game now?',
+      body: 'Everyone jumps to the recap, and the chicken’s pub is revealed.',
+      action: 'End game',
+      variant: 'alert',
+    });
+    if (!ok) return;
     try {
       await rpc('admin_force_end', { g: g.id });
       load();
@@ -250,7 +287,8 @@ function Games() {
   }
 
   async function remove(g) {
-    if (!confirm('Delete this game and all its photos for good?')) return;
+    const ok = await ask({ title: 'Delete this game?', body: 'The game, its recap and all its photos go for good.', action: 'Delete game', variant: 'alert' });
+    if (!ok) return;
     try {
       const store = supabase().storage.from('photos');
       const { data: folders } = await store.list(g.id, { limit: 1000 });
@@ -272,100 +310,107 @@ function Games() {
     <>
       {created && <Codes codes={created} origin={origin} onClose={() => setCreated(null)} />}
 
-      <h2>New game</h2>
-      <div className="card">
-        <div className="row">
-          <span className="grow">Pubs in play tonight: <b>{chosen.size}</b></span>
-          <button className="btn btn-sm" onClick={() => setChosen(new Set(pubs.map((p) => p.id)))}>All</button>
-          <button className="btn btn-sm" onClick={() => setChosen(new Set())}>None</button>
+      <Panel
+        title="New game"
+        action={<Badge variant="hunt">{chosen.size} pubs</Badge>}
+      >
+        <div className="mb-2 flex gap-2">
+          <Button size="sm" variant="secondary" onClick={() => setChosen(new Set(pubs.map((p) => p.id)))}>All</Button>
+          <Button size="sm" variant="secondary" onClick={() => setChosen(new Set())}>None</Button>
         </div>
-        <ul className="list">
-          {pubs.map((p) => (
-            <li key={p.id}>
-              <label className="row" style={{ color: 'var(--text)', margin: 0 }}>
-                <input type="checkbox" checked={chosen.has(p.id)} onChange={() => toggle(p.id)} />
-                <span>{p.name}</span>
-              </label>
-            </li>
-          ))}
-          {!pubs.length && <li className="muted">Add pubs first (Pubs tab).</li>}
-        </ul>
-        <button className="btn btn-primary btn-block" disabled={busy || chosen.size < 2} onClick={create}>
-          Create game
-        </button>
-      </div>
-      {error && <div className="err">{error}</div>}
+        {pubs.length ? (
+          <Rows>
+            {pubs.map((p) => (
+              <Row key={p.id}>
+                <label className="flex min-h-11 cursor-pointer items-center gap-3 font-bold">
+                  <Checkbox checked={chosen.has(p.id)} onCheckedChange={() => toggle(p.id)} />
+                  {p.name}
+                </label>
+              </Row>
+            ))}
+          </Rows>
+        ) : (
+          <Empty emoji="🍺">Add pubs in the Pubs tab first.</Empty>
+        )}
+        <Button size="lg" block className="mt-3" variant="chicken" disabled={busy || chosen.size < 2} onClick={create}>
+          <Plus aria-hidden /> Create game
+        </Button>
+      </Panel>
+      <ErrorNote>{error}</ErrorNote>
 
-      <h2>Games</h2>
+      <h2 className="mt-6 mb-3 text-xl font-extrabold">Games</h2>
       {games.map((g) => (
-        <div className="card" key={g.id}>
-          <div className="row">
-            <b className="grow">{new Date(g.created_at).toLocaleDateString()} {fmtTime(g.created_at)}</b>
-            <span className={`badge ${g.status === 'live' ? 'badge-yolk' : g.status === 'ended' ? '' : 'badge-green'}`}>{g.status}</span>
-          </div>
+        <Panel
+          key={g.id}
+          title={`${new Date(g.created_at).toLocaleDateString()} · ${fmtTime(g.created_at)}`}
+          action={<Badge variant={g.status === 'live' ? 'alert' : g.status === 'ended' ? 'default' : 'found'}>{g.status === 'lobby' ? 'Waiting' : g.status === 'live' ? 'Live' : 'Ended'}</Badge>}
+        >
           {codes[g.id] && g.status !== 'ended' && (
-            <details style={{ marginTop: 8 }}>
-              <summary className="small muted">Show codes</summary>
+            <details className="mb-3">
+              <summary className="min-h-11 cursor-pointer py-2 font-bold text-muted-foreground">Show codes</summary>
               <Codes codes={{ ...codes[g.id], game_id: g.id }} origin={origin} />
             </details>
           )}
-          <div className="row" style={{ marginTop: 8 }}>
-            {g.status === 'ended' && <a className="btn btn-sm" href={`/game/${g.id}/recap`}>Recap</a>}
-            {g.status !== 'ended' && <button className="btn btn-sm" onClick={() => forceEnd(g)}>Force end</button>}
-            <button className="btn btn-sm" onClick={() => remove(g)}>Delete</button>
+          <div className="flex flex-wrap gap-2">
+            {g.status === 'ended' && (
+              <Button size="sm" variant="clue" asChild><a href={`/game/${g.id}/recap`}><Trophy aria-hidden /> Recap</a></Button>
+            )}
+            {g.status !== 'ended' && <Button size="sm" variant="secondary" onClick={() => forceEnd(g)}><Flag aria-hidden /> Force end</Button>}
+            <Button size="sm" variant="ghost" onClick={() => remove(g)}><Trash2 aria-hidden /> Delete</Button>
           </div>
-        </div>
+        </Panel>
       ))}
-      {!games.length && <p className="muted">No games yet.</p>}
+      {!games.length && <Empty emoji="🎲">No games yet. Create one above.</Empty>}
     </>
   );
 }
 
 function Codes({ codes, origin, onClose }) {
   const link = `${origin}/?code=${codes.team_code}`;
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className={onClose ? 'card card-hi stack' : 'stack'}>
-      {onClose && <h2 style={{ marginTop: 0 }}>Game created 🎉</h2>}
-      <div>
-        <label>Team code: share with everyone</label>
-        <div className="code">{codes.team_code}</div>
-        <div className="row">
-          <span className="small muted grow" style={{ wordBreak: 'break-all' }}>{link}</span>
-          <button
-            className="btn btn-sm"
-            onClick={() => {
-              navigator.clipboard?.writeText(`Find the Chicken 🐔 join here: ${link}`);
-              setCopied(true);
-            }}
-          >
-            {copied ? 'Copied' : 'Copy link'}
-          </button>
-        </div>
+  const body = (
+    <div className="space-y-4">
+      <div className="rounded-2xl border-2 border-hunt-edge bg-hunt/15 p-4">
+        <p className="text-sm font-extrabold uppercase opacity-80">Team code · share with everyone</p>
+        <p className="font-display text-4xl font-extrabold tracking-widest">{codes.team_code}</p>
+        <p className="mb-3 text-sm font-semibold break-all text-muted-foreground">{link}</p>
+        <Button
+          size="sm"
+          onClick={() => {
+            navigator.clipboard?.writeText(`Find the Chicken 🐔 join here: ${link}`);
+            toast.success('Join link copied');
+          }}
+        >
+          <Copy aria-hidden /> Copy join link
+        </Button>
       </div>
-      <div>
-        <label>Chicken code: give this ONLY to the chicken</label>
-        <div className="code">{codes.chicken_code}</div>
+      <div className="rounded-2xl border-2 border-chick-edge bg-chick/15 p-4">
+        <p className="text-sm font-extrabold uppercase opacity-80">Chicken code · ONLY for the chicken</p>
+        <p className="font-display text-4xl font-extrabold tracking-widest">{codes.chicken_code}</p>
       </div>
-      {onClose && <button className="btn" onClick={onClose}>Done</button>}
     </div>
+  );
+  if (!onClose) return body;
+  return (
+    <Panel title="Game created 🎉" className="border-found-edge">
+      {body}
+      <Button block variant="secondary" className="mt-4" onClick={onClose}>Done</Button>
+    </Panel>
   );
 }
 
 // ---------------------------------------------------------------- settings
 const FIELDS = [
-  ['head_start_min', 'Chicken head start (minutes)'],
-  ['pint_min', 'Minimum time in a wrong pub (minutes)'],
-  ['nearby_m', '“Team nearby” alert distance (metres)'],
-  ['left_early_m', '“Left early” distance (metres)'],
-  ['shrink_interval_min', 'Zone shrinks every (minutes)'],
-  ['shrink_factor', 'Each new zone is this fraction of the last (0.6 = 60%)'],
-  ['zone_floor_pubs', 'Stop shrinking when this many pubs are left in the zone'],
+  ['head_start_min', 'Chicken head start', 'minutes'],
+  ['pint_min', 'Minimum time in a wrong pub', 'minutes'],
+  ['nearby_m', '“Team nearby” alert distance', 'metres'],
+  ['left_early_m', '“Left early” distance', 'metres'],
+  ['shrink_interval_min', 'Zone shrinks every', 'minutes'],
+  ['shrink_factor', 'Each new zone’s size (0.6 = 60% of the last)', 'fraction'],
+  ['zone_floor_pubs', 'Stop shrinking when this many pubs are left', 'pubs'],
 ];
 
 function Settings({ onLogout }) {
   const [s, setS] = useState(null);
-  const [msg, setMsg] = useState(null);
   const [error, setError] = useState(null);
   const [pw, setPw] = useState('');
 
@@ -375,13 +420,12 @@ function Settings({ onLogout }) {
 
   async function save(e) {
     e.preventDefault();
-    setMsg(null);
     setError(null);
     try {
       const { id, ...rest } = s;
       const clean = Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, Number(v)]));
       await select(supabase().from('app_settings').update(clean).eq('id', 1));
-      setMsg('Saved. New games will use these settings.');
+      toast.success('Settings saved. New games will use them.');
     } catch (err) {
       setError(err.message);
     }
@@ -389,12 +433,11 @@ function Settings({ onLogout }) {
 
   async function changePw(e) {
     e.preventDefault();
-    setMsg(null);
     setError(null);
     try {
       await rpc('admin_set_password', { new_password: pw });
       setPw('');
-      setMsg('Admin password changed.');
+      toast.success('Admin password changed');
     } catch (err) {
       setError(err.message);
     }
@@ -405,36 +448,41 @@ function Settings({ onLogout }) {
     onLogout();
   }
 
-  if (!s) return error ? <div className="err">{error}</div> : <p className="muted">Loading…</p>;
+  if (!s) return error ? <ErrorNote>{error}</ErrorNote> : <p className="font-bold text-muted-foreground">Loading…</p>;
   return (
     <>
-      <h2>Game settings</h2>
-      <form className="card stack" onSubmit={save}>
-        {FIELDS.map(([k, label]) => (
-          <div key={k}>
-            <label htmlFor={k}>{label}</label>
-            <input
-              id={k}
-              type="number"
-              step={k === 'shrink_factor' ? '0.05' : '1'}
-              min={k === 'shrink_factor' ? '0.15' : '0'}
-              max={k === 'shrink_factor' ? '0.95' : undefined}
-              value={s[k]}
-              onChange={(e) => setS({ ...s, [k]: e.target.value })}
-            />
-          </div>
-        ))}
-        <button className="btn btn-primary btn-block">Save settings</button>
-      </form>
-      {msg && <div className="ok">{msg}</div>}
-      {error && <div className="err">{error}</div>}
-
-      <h2>Admin password</h2>
-      <form className="card stack" onSubmit={changePw}>
-        <input type="password" placeholder="New password" value={pw} onChange={(e) => setPw(e.target.value)} />
-        <button className="btn btn-block" disabled={pw.length < 6}>Change password</button>
-      </form>
-      <button className="btn btn-block" onClick={logout}>Log out of admin</button>
+      <Panel title="Game settings">
+        <form className="space-y-4" onSubmit={save}>
+          {FIELDS.map(([k, label, unit]) => (
+            <div key={k} className="space-y-1.5">
+              <Label htmlFor={k} className="font-extrabold">{label}</Label>
+              <div className="flex items-center gap-3">
+                <Input
+                  id={k}
+                  type="number"
+                  inputMode="decimal"
+                  step={k === 'shrink_factor' ? '0.05' : '1'}
+                  min={k === 'shrink_factor' ? '0.15' : '0'}
+                  max={k === 'shrink_factor' ? '0.95' : undefined}
+                  value={s[k]}
+                  onChange={(e) => setS({ ...s, [k]: e.target.value })}
+                  className="w-32"
+                />
+                <span className="font-semibold text-muted-foreground">{unit}</span>
+              </div>
+            </div>
+          ))}
+          <Button size="lg" block>Save settings</Button>
+        </form>
+      </Panel>
+      <ErrorNote>{error}</ErrorNote>
+      <Panel title="Admin password">
+        <form className="space-y-3" onSubmit={changePw}>
+          <Input type="password" aria-label="New admin password" placeholder="New password (6+ characters)" value={pw} onChange={(e) => setPw(e.target.value)} />
+          <Button block variant="secondary" disabled={pw.length < 6}><KeyRound aria-hidden /> Change password</Button>
+        </form>
+      </Panel>
+      <Button block variant="ghost" onClick={logout}><LogOut aria-hidden /> Log out of admin</Button>
     </>
   );
 }

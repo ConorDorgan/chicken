@@ -1,10 +1,16 @@
 'use client';
-import { use, useEffect, useMemo, useRef, useState } from 'react';
+import { use, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Bell, Camera, Check, Flag, Map as MapIcon, MessageCircle, Send, Shrink, Undo2, UserMinus, Users, X } from 'lucide-react';
+import { toast } from 'sonner';
 import Map from '@/components/Map';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+import { BigNumber, Empty, ErrorNote, Hero, Panel, PhotoGrid, Row, Rows, Screen, TabBar, TopBar, useConfirm } from '@/components/game-ui';
 import { useLiveData, useNow } from '@/lib/hooks';
 import { rpc, select, supabase } from '@/lib/supabase';
-import { askNotifications, fmtAgo, fmtCountdown, fmtTime, ping, signedUrls } from '@/lib/util';
+import { askNotifications, fmtAgo, fmtCountdown, fmtTime, ping, signedUrls, TEAM_COLORS } from '@/lib/util';
 
 const STALE_MS = 3 * 60 * 1000;
 
@@ -20,7 +26,7 @@ async function loadChicken(gameId) {
     select(sb.from('clues').select('*').eq('game_id', gameId).order('id', { ascending: false })),
     select(sb.from('zones').select('*').eq('game_id', gameId).order('seq', { ascending: false }).limit(1)),
   ]);
-  if (!secret) throw new Error('This phone is not the chicken for this game.');
+  if (!secret) throw new Error('This phone isn’t the chicken for this game. Join with the chicken code on the home page.');
   const photos = await signedUrls(visits.flatMap((v) => [v.arrive_photo, v.leave_photo]));
   return {
     game,
@@ -35,19 +41,17 @@ async function loadChicken(gameId) {
   };
 }
 
+const ALERT_ICON = { nearby: '🚨', left_early: '🏃', claim: '🐔', checkin: '📍', joined: '👋' };
+
 export default function ChickenPage({ params }) {
   const { id } = use(params);
   const router = useRouter();
+  const ask = useConfirm();
   const now = useNow(1000);
-  const { data, error, refresh } = useLiveData(
-    id,
-    ['games', 'teams', 'visits', 'alerts', 'clues', 'zones'],
-    () => loadChicken(id),
-    15000
-  );
+  const { data, error, refresh } = useLiveData(id, ['games', 'teams', 'visits', 'alerts', 'clues', 'zones'], () => loadChicken(id), 15000);
   const [tab, setTab] = useState('map');
-  const [toast, setToast] = useState(null);
   const [actionError, setActionError] = useState(null);
+  const [lastSeenAlerts, setLastSeenAlerts] = useState(0);
   const seenAlert = useRef(null);
 
   // ring + toast for new alerts
@@ -56,6 +60,7 @@ export default function ChickenPage({ params }) {
     const newest = data.alerts[0]?.id ?? 0;
     if (seenAlert.current === null) {
       seenAlert.current = newest;
+      setLastSeenAlerts(newest);
       return;
     }
     const fresh = data.alerts.filter((a) => a.id > seenAlert.current && a.kind !== 'checkin' && a.kind !== 'joined');
@@ -64,12 +69,15 @@ export default function ChickenPage({ params }) {
       const a = fresh[0];
       const title = a.kind === 'nearby' ? '🚨 Team nearby' : a.kind === 'claim' ? '🐔 Found you?' : '🏃 Left early';
       ping(title, a.message);
-      setToast(`${title}: ${a.message}`);
-      setTimeout(() => setToast(null), 6000);
+      (a.kind === 'claim' ? toast.warning : toast.error)(title, { description: a.message, duration: 8000 });
     }
   }, [data]);
 
-  // anyone's open screen keeps the zone timer moving
+  useEffect(() => {
+    if (tab === 'alerts' && data) setLastSeenAlerts(data.alerts[0]?.id ?? 0);
+  }, [tab, data]);
+
+  // any open screen keeps the zone timer moving
   useEffect(() => {
     if (data?.game.status === 'live' && data.game.next_shrink_at && new Date(data.game.next_shrink_at) <= now) {
       rpc('tick_zone', { g: id }).catch(() => {});
@@ -80,8 +88,8 @@ export default function ChickenPage({ params }) {
     if (data?.game.status === 'ended') router.replace(`/game/${id}/recap`);
   }, [data, id, router]);
 
-  async function act(fn, args, confirmText) {
-    if (confirmText && !confirm(confirmText)) return;
+  async function act(fn, args, confirmOpts) {
+    if (confirmOpts && !(await ask(confirmOpts))) return;
     setActionError(null);
     try {
       const r = await rpc(fn, args);
@@ -92,54 +100,85 @@ export default function ChickenPage({ params }) {
     }
   }
 
-  if (error && !data) return <div className="err">{error} <a href="/">Home</a></div>;
-  if (!data) return <p className="muted">Loading…</p>;
+  if (error && !data) {
+    return (
+      <Screen>
+        <ErrorNote>{error}</ErrorNote>
+        <Button variant="secondary" asChild><a href="/">Go home</a></Button>
+      </Screen>
+    );
+  }
+  if (!data) return <Screen><p className="pt-10 text-center font-bold text-muted-foreground">Loading…</p></Screen>;
 
   const { game, secret, pubs, teams, visits, alerts, clues, zone, photos } = data;
   const myPub = pubs.find((p) => p.id === secret.chicken_pub_id);
   const pending = visits.filter((v) => v.status === 'claimed');
   const pubName = (pid) => pubs.find((p) => p.id === pid)?.name || 'a pub';
   const teamName = (tid) => teams.find((t) => t.id === tid)?.name || 'A team';
+  const colorOf = Object.fromEntries(teams.map((t, i) => [t.id, TEAM_COLORS[i % TEAM_COLORS.length]]));
 
-  // ------------------------------------------------ lobby
+  // ------------------------------------------------ lobby: pick a pub
   if (game.status === 'lobby') {
     return (
-      <>
-        <h1>🐔 You’re the chicken</h1>
-        <p className="muted">Pick your hiding pub. Only you can see this.</p>
+      <Screen>
+        <TopBar emoji="🐔" title="You’re the chicken" sub="Pick your hiding pub. Only you can see this." />
         <Map
-          pubs={pubs.map((p) => ({ ...p, icon: p.id === secret.chicken_pub_id ? '🐔' : '🍺', highlight: p.id === secret.chicken_pub_id }))}
+          pubs={pubs.map((p) => ({ ...p, icon: p.id === myPub?.id ? '🐔' : '🍺', tone: p.id === myPub?.id ? 'chicken' : '' }))}
           onPubClick={(p) => act('chicken_choose_pub', { g: id, pub: p.id })}
         />
-        <ul className="list card">
-          {pubs.map((p) => (
-            <li key={p.id} className="row">
-              <span className="grow">{p.id === secret.chicken_pub_id ? '🐔 ' : ''}{p.name}</span>
-              <button
-                className={`btn btn-sm ${p.id === secret.chicken_pub_id ? 'btn-primary' : ''}`}
-                onClick={() => act('chicken_choose_pub', { g: id, pub: p.id })}
-              >
-                {p.id === secret.chicken_pub_id ? 'Hiding here' : 'Hide here'}
-              </button>
-            </li>
-          ))}
-        </ul>
-        <div className="card">
-          <h3 style={{ marginTop: 0 }}>Teams joined ({teams.length})</h3>
-          <p>{teams.map((t) => t.name).join(', ') || <span className="muted">Nobody yet</span>}</p>
-        </div>
-        {actionError && <div className="err">{actionError}</div>}
-        <button
-          className="btn btn-primary btn-block"
+        <Panel title="Where are you hiding?" className="mt-4">
+          <Rows>
+            {pubs.map((p) => {
+              const on = p.id === myPub?.id;
+              return (
+                <Row
+                  key={p.id}
+                  lead={on ? '🐔' : '🍺'}
+                  trail={
+                    <Button size="sm" variant={on ? 'chicken' : 'secondary'} onClick={() => act('chicken_choose_pub', { g: id, pub: p.id })}>
+                      {on ? 'Hiding here' : 'Hide here'}
+                    </Button>
+                  }
+                >
+                  <span className="font-bold">{p.name}</span>
+                </Row>
+              );
+            })}
+          </Rows>
+        </Panel>
+        <Panel title={`Teams in (${teams.length})`}>
+          {teams.length ? (
+            <div className="flex flex-wrap gap-2">
+              {teams.map((t) => (
+                <span key={t.id} className="inline-flex items-center gap-1.5 rounded-full border-2 bg-card-2 px-3 py-1 font-extrabold" style={{ borderColor: colorOf[t.id] }}>
+                  <span className="size-2.5 rounded-full" style={{ background: colorOf[t.id] }} aria-hidden />
+                  {t.name}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <Empty emoji="👀">No teams yet. Send them the team link.</Empty>
+          )}
+        </Panel>
+        <ErrorNote>{actionError}</ErrorNote>
+        <Button
+          size="lg"
+          block
+          variant="chicken"
           disabled={!myPub}
           onClick={() => {
             askNotifications();
-            act('chicken_start', { g: id }, `Start the hunt? You’ll get ${game.settings.head_start_min} minutes’ head start to reach ${myPub?.name}.`);
+            act('chicken_start', { g: id }, {
+              title: 'Start the hunt?',
+              body: `You get ${game.settings.head_start_min} minutes’ head start to get to ${myPub?.name}. Go!`,
+              action: 'Start the hunt',
+              variant: 'chicken',
+            });
           }}
         >
-          {myPub ? `Start the hunt (hiding in ${myPub.name})` : 'Pick a pub first'}
-        </button>
-      </>
+          {myPub ? 'Start the hunt' : 'Pick a pub first'}
+        </Button>
+      </Screen>
     );
   }
 
@@ -147,155 +186,173 @@ export default function ChickenPage({ params }) {
   const headStartLeft = new Date(game.hunt_starts_at) - now;
   const shrinkLeft = game.next_shrink_at ? new Date(game.next_shrink_at) - now : null;
   const found = teams.filter((t) => t.status === 'found').length;
+  const unread = alerts.filter((a) => a.id > lastSeenAlerts && a.kind !== 'checkin' && a.kind !== 'joined').length;
+
+  const photoItems = visits.flatMap((v) =>
+    [
+      v.leave_photo && { src: photos[v.leave_photo], cap: `🍺 ${teamName(v.team_id)} leaving ${pubName(v.pub_id)}`, k: v.id + 'l' },
+      v.arrive_photo && { src: photos[v.arrive_photo], cap: `📍 ${teamName(v.team_id)} at ${pubName(v.pub_id)}`, k: v.id + 'a' },
+    ].filter(Boolean)
+  );
 
   return (
-    <>
-      {pending.length > 0 && (
-        <div className="banner" onClick={() => setTab('teams')}>
-          🐔 {pending.length} team{pending.length > 1 ? 's say' : ' says'} they found you. Confirm below
-        </div>
-      )}
-      <div className="row">
-        <h1 className="grow">🐔 {myPub?.name}</h1>
-        <span className="badge badge-yolk">{found}/{teams.length} found</span>
-      </div>
+    <Screen tabs>
+      <TopBar
+        emoji="🐔"
+        title={myPub?.name}
+        sub="Your hiding pub"
+        right={<Badge variant="found" className="text-sm">{found}/{teams.length} found</Badge>}
+      />
 
-      {headStartLeft > 0 ? (
-        <div className="card card-hi center">
-          <div className="muted">Head start: get to {myPub?.name}!</div>
-          <div className="big">{fmtCountdown(headStartLeft)}</div>
-        </div>
-      ) : (
-        shrinkLeft !== null && <p className="small muted">🔴 Zone shrinks in {fmtCountdown(shrinkLeft)}</p>
+      {headStartLeft > 0 && (
+        <Hero tone="head" kicker="Head start" title={`Get to ${myPub?.name}!`}>
+          <BigNumber>{fmtCountdown(headStartLeft)}</BigNumber>
+        </Hero>
       )}
 
       {pending.map((v) => (
-        <div key={v.id} className="card card-red stack">
-          <b>{teamName(v.team_id)} say they’ve found you at {pubName(v.pub_id)}</b>
-          {photos[v.arrive_photo] && <img src={photos[v.arrive_photo]} alt="" style={{ width: '100%', borderRadius: 10 }} />}
-          <div className="row">
-            <button className="btn btn-green grow" onClick={() => act('chicken_resolve_claim', { v: v.id, confirm: true })}>✅ Yes, they found me</button>
-            <button className="btn btn-red grow" onClick={() => act('chicken_resolve_claim', { v: v.id, confirm: false })}>❌ No</button>
+        <Hero key={v.id} tone="alert" kicker="Claim" title={`${teamName(v.team_id)} say they’ve found you`}>
+          <p className="font-semibold">At {pubName(v.pub_id)}, checked in {fmtTime(v.arrived_at)}.</p>
+          {photos[v.arrive_photo] && <img src={photos[v.arrive_photo]} alt={`${teamName(v.team_id)} outside ${pubName(v.pub_id)}`} className="w-full rounded-2xl border-2 border-alert-edge" />}
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="found" size="lg" onClick={() => act('chicken_resolve_claim', { v: v.id, confirm: true })}><Check aria-hidden /> Yes</Button>
+            <Button variant="secondary" size="lg" onClick={() => act('chicken_resolve_claim', { v: v.id, confirm: false })}><X aria-hidden /> No</Button>
           </div>
-        </div>
+        </Hero>
       ))}
-      {actionError && <div className="err">{actionError}</div>}
-
-      <div className="tabs">
-        {[['map', 'Map'], ['teams', 'Teams'], ['alerts', 'Alerts'], ['photos', 'Photos'], ['clues', 'Clues']].map(([k, l]) => (
-          <button key={k} className={`btn tab btn-sm ${tab === k ? 'tab-on' : ''}`} onClick={() => setTab(k)}>{l}</button>
-        ))}
-      </div>
+      <ErrorNote>{actionError}</ErrorNote>
 
       {tab === 'map' && (
         <>
+          {headStartLeft <= 0 && shrinkLeft !== null && (
+            <p className="mb-2 flex items-center gap-2 font-bold text-alert">
+              <span className="zone-ring inline-block size-3 rounded-full bg-alert" aria-hidden /> Zone shrinks in {fmtCountdown(shrinkLeft)}
+            </p>
+          )}
           <Map
-            height="55vh"
+            height="52vh"
             zone={zone}
-            pubs={pubs.map((p) => ({ ...p, icon: p.id === myPub?.id ? '🐔' : '🍺', highlight: p.id === myPub?.id }))}
+            pubs={pubs.map((p) => ({ ...p, icon: p.id === myPub?.id ? '🐔' : '🍺', tone: p.id === myPub?.id ? 'chicken' : '' }))}
             people={teams.map((t) => ({
               id: t.id,
               lat: t.last_lat,
               lng: t.last_lng,
+              color: colorOf[t.id],
               label: `${t.status === 'found' ? '✅ ' : ''}${t.name} · ${fmtAgo(t.last_active_at, now)}`,
               stale: !t.last_active_at || now - new Date(t.last_active_at) > STALE_MS,
             }))}
           />
-          <div className="row" style={{ marginTop: 10 }}>
-            <button
-              className="btn grow"
-              onClick={async () => {
-                const ok = await act('chicken_shrink_now', { g: id }, 'Shrink the zone now?');
-                if (ok === false) setActionError('The zone is as small as it can go.');
-              }}
-            >
-              🔴 Shrink now
-            </button>
-          </div>
+          <Button
+            block
+            variant="alert"
+            className="mt-4"
+            onClick={async () => {
+              const ok = await act('chicken_shrink_now', { g: id }, {
+                title: 'Shrink the zone now?',
+                body: 'Every team gets told. The timer to the next automatic shrink starts again.',
+                action: 'Shrink it',
+                variant: 'alert',
+              });
+              if (ok === false) toast('The zone is as small as it can go.');
+            }}
+          >
+            <Shrink aria-hidden /> Shrink the zone
+          </Button>
         </>
       )}
 
       {tab === 'teams' && (
-        <ul className="list card">
-          {teams.map((t) => {
-            const v = visits.find((x) => x.id === t.current_visit_id);
-            const stale = !t.last_active_at || now - new Date(t.last_active_at) > STALE_MS;
-            return (
-              <li key={t.id} className="stack">
-                <div className="row">
-                  <b className="grow">{t.name}</b>
-                  <StatusBadge t={t} />
-                </div>
-                <div className="small muted">
-                  {v ? `At ${pubName(v.pub_id)} since ${fmtTime(v.arrived_at)} · ` : ''}
-                  <span style={{ color: stale ? 'var(--red)' : undefined }}>last active {fmtAgo(t.last_active_at, now)}</span>
-                  {' · '}{visits.filter((x) => x.team_id === t.id).length} pubs checked
-                </div>
-                <div className="row">
-                  {t.status === 'found' && (
-                    <button className="btn btn-sm" onClick={() => act('chicken_undo_find', { t: t.id }, `Undo ${t.name}’s find?`)}>Undo find</button>
-                  )}
-                  <button className="btn btn-sm" onClick={() => act('chicken_remove_team', { t: t.id }, `Remove ${t.name} from the game?`)}>Remove</button>
-                </div>
-              </li>
-            );
-          })}
-          {!teams.length && <li className="muted">No teams.</li>}
-        </ul>
+        <Panel title="Teams">
+          {teams.length ? (
+            <Rows>
+              {teams.map((t) => {
+                const v = visits.find((x) => x.id === t.current_visit_id);
+                const stale = !t.last_active_at || now - new Date(t.last_active_at) > STALE_MS;
+                return (
+                  <Row key={t.id} lead={<span className="size-4 rounded-full" style={{ background: colorOf[t.id] }} />} className="items-start">
+                    <div className="flex items-center gap-2">
+                      <b className="flex-1 text-lg">{t.name}</b>
+                      <StatusBadge t={t} />
+                    </div>
+                    <p className="text-sm font-semibold text-muted-foreground">
+                      {v ? `At ${pubName(v.pub_id)} since ${fmtTime(v.arrived_at)} · ` : ''}
+                      <span className={stale ? 'text-alert' : ''}>active {fmtAgo(t.last_active_at, now)}</span>
+                      {' · '}{visits.filter((x) => x.team_id === t.id).length} pubs
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {t.status === 'found' && (
+                        <Button size="sm" variant="secondary" onClick={() => act('chicken_undo_find', { t: t.id }, { title: `Undo ${t.name}’s find?`, body: 'They go back to being inside the pub, unconfirmed.', action: 'Undo find' })}>
+                          <Undo2 aria-hidden /> Undo find
+                        </Button>
+                      )}
+                      <Button size="sm" variant="ghost" onClick={() => act('chicken_remove_team', { t: t.id }, { title: `Remove ${t.name}?`, body: 'They drop out of the game and the recap.', action: 'Remove team', variant: 'alert' })}>
+                        <UserMinus aria-hidden /> Remove
+                      </Button>
+                    </div>
+                  </Row>
+                );
+              })}
+            </Rows>
+          ) : (
+            <Empty>No teams.</Empty>
+          )}
+        </Panel>
       )}
 
       {tab === 'alerts' && (
-        <ul className="list card">
-          {alerts.map((a) => (
-            <li key={a.id} className="row">
-              <span>{{ nearby: '🚨', left_early: '🏃', claim: '🐔', checkin: '📍', joined: '👋' }[a.kind]}</span>
-              <span className="grow">{a.message}</span>
-              <span className="small muted">{fmtTime(a.created_at)}</span>
-            </li>
-          ))}
-          {!alerts.length && <li className="muted">Nothing yet.</li>}
-        </ul>
+        <Panel title="Alerts">
+          {alerts.length ? (
+            <Rows>
+              {alerts.map((a) => (
+                <Row key={a.id} lead={ALERT_ICON[a.kind]} trail={<span className="text-sm font-bold text-muted-foreground">{fmtTime(a.created_at)}</span>}>
+                  <span className={a.kind === 'nearby' || a.kind === 'left_early' ? 'font-extrabold' : 'font-semibold'}>{a.message}</span>
+                </Row>
+              ))}
+            </Rows>
+          ) : (
+            <Empty emoji="🔕">Quiet so far. Alerts land here.</Empty>
+          )}
+        </Panel>
       )}
 
-      {tab === 'photos' && (
-        <div className="feed">
-          {visits.flatMap((v) =>
-            [
-              v.leave_photo && { src: photos[v.leave_photo], cap: `🍺 ${teamName(v.team_id)} leaving ${pubName(v.pub_id)}`, k: v.id + 'l' },
-              v.arrive_photo && { src: photos[v.arrive_photo], cap: `📍 ${teamName(v.team_id)} at ${pubName(v.pub_id)}`, k: v.id + 'a' },
-            ].filter(Boolean)
-          ).map((p) => (
-            <figure key={p.k}>
-              {p.src ? <img src={p.src} alt="" loading="lazy" /> : <div style={{ aspectRatio: 1 }} />}
-              <figcaption>{p.cap}</figcaption>
-            </figure>
-          ))}
-          {!visits.length && <p className="muted">No photos yet.</p>}
-        </div>
-      )}
+      {tab === 'photos' && <PhotoGrid items={photoItems} empty="No photos yet. They arrive as teams check in and drink up." />}
 
       {tab === 'clues' && <ClueBox gameId={id} clues={clues} onSent={refresh} />}
 
-      <div className="spacer" />
-      <button className="btn btn-block btn-ghost" onClick={() => act('chicken_end_game', { g: id }, 'End the game for everyone now?')}>
-        End game
-      </button>
+      <Button
+        block
+        variant="ghost"
+        className="mt-6"
+        onClick={() => act('chicken_end_game', { g: id }, { title: 'End the game for everyone?', body: 'Everyone jumps to the recap and your pub is revealed.', action: 'End game', variant: 'alert' })}
+      >
+        <Flag aria-hidden /> End game
+      </Button>
 
-      {toast && <div className="toast" onClick={() => setToast(null)}>{toast}</div>}
-    </>
+      <TabBar
+        value={tab}
+        onChange={setTab}
+        items={[
+          { key: 'map', label: 'Map', icon: MapIcon },
+          { key: 'teams', label: 'Teams', icon: Users, badge: pending.length },
+          { key: 'alerts', label: 'Alerts', icon: Bell, badge: tab === 'alerts' ? 0 : unread },
+          { key: 'photos', label: 'Photos', icon: Camera },
+          { key: 'clues', label: 'Clues', icon: MessageCircle },
+        ]}
+      />
+    </Screen>
   );
 }
 
 function StatusBadge({ t }) {
   const map = {
-    hunting: ['Hunting', ''],
-    inside: ['Checked in', 'badge-yolk'],
-    locked: ['Drinking 🍺', 'badge-yolk'],
-    pending: ['Claims found', 'badge-red'],
-    found: [`Found #${t.finish_position}`, 'badge-green'],
+    hunting: ['Hunting', 'hunt'],
+    inside: ['Checked in', 'head'],
+    locked: ['Drinking 🍺', 'chicken'],
+    pending: ['Says found', 'alert'],
+    found: [`Found #${t.finish_position}`, 'found'],
   };
-  const [label, cls] = map[t.status] || [t.status, ''];
-  return <span className={`badge ${cls}`}>{label}</span>;
+  const [label, variant] = map[t.status] || [t.status, 'default'];
+  return <Badge variant={variant}>{label}</Badge>;
 }
 
 function ClueBox({ gameId, clues, onSent }) {
@@ -307,6 +364,7 @@ function ClueBox({ gameId, clues, onSent }) {
     try {
       await rpc('chicken_send_clue', { g: gameId, clue: text });
       setText('');
+      toast.success('Clue sent to every team');
       onSent();
     } catch (err) {
       setError(err.message);
@@ -314,21 +372,26 @@ function ClueBox({ gameId, clues, onSent }) {
   }
   return (
     <>
-      <form className="card stack" onSubmit={send}>
-        <label htmlFor="clue">Send a clue to every team</label>
-        <textarea id="clue" rows={2} maxLength={500} value={text} onChange={(e) => setText(e.target.value)} placeholder="e.g. I can see a river" />
-        {error && <div className="err">{error}</div>}
-        <button className="btn btn-primary btn-block" disabled={!text.trim()}>Send clue</button>
-      </form>
-      <ul className="list card">
-        {clues.map((c) => (
-          <li key={c.id} className="row">
-            <span className="grow">{c.text}</span>
-            <span className="small muted">{fmtTime(c.created_at)}</span>
-          </li>
-        ))}
-        {!clues.length && <li className="muted">No clues sent yet.</li>}
-      </ul>
+      <Panel title="Send a clue" className="border-clue-edge">
+        <form className="space-y-3" onSubmit={send}>
+          <Textarea aria-label="Clue" rows={2} maxLength={500} value={text} onChange={(e) => setText(e.target.value)} placeholder="e.g. I can see a river" />
+          <ErrorNote>{error}</ErrorNote>
+          <Button block variant="clue" disabled={!text.trim()}><Send aria-hidden /> Send to every team</Button>
+        </form>
+      </Panel>
+      <Panel title="Sent">
+        {clues.length ? (
+          <Rows>
+            {clues.map((c) => (
+              <Row key={c.id} lead="💬" trail={<span className="text-sm font-bold text-muted-foreground">{fmtTime(c.created_at)}</span>}>
+                <span className="font-semibold">{c.text}</span>
+              </Row>
+            ))}
+          </Rows>
+        ) : (
+          <Empty emoji="🤫">No clues yet. Throw them a bone if they’re lost.</Empty>
+        )}
+      </Panel>
     </>
   );
 }
