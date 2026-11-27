@@ -11,6 +11,13 @@ A pub hunt web app. See [SPEC.md](SPEC.md) for the rules and design.
    then paste the whole file into **SQL Editor → Run**.
    ⚠️ Re-running it wipes all games and pubs. Only re-run it when an update asks you to.
 
+### Updates to an existing database
+If you set the database up before an update below, run its file once in **SQL Editor → Run**. These keep all your pubs and games.
+
+| File | What it adds |
+|---|---|
+| `supabase/002_team_players.sql` | Team player names, and GPS recorded from the moment a team joins |
+
 ### 2. Vercel
 Import the repo and set these environment variables (Settings → Environment Variables):
 

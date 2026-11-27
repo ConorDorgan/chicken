@@ -1,11 +1,12 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, RotateCcw } from 'lucide-react';
+import { ArrowRight, MapPin, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { ErrorNote, Screen } from '@/components/game-ui';
+import { ErrorNote, PlayersEditor, Screen } from '@/components/game-ui';
+import { askForLocation } from '@/lib/hooks';
 import { rpc } from '@/lib/supabase';
 import { lastGame, rememberGame } from '@/lib/util';
 
@@ -13,6 +14,8 @@ export default function Home() {
   const router = useRouter();
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
+  const [players, setPlayers] = useState([]);
+  const [locWarning, setLocWarning] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [resume, setResume] = useState(null);
@@ -29,10 +32,32 @@ export default function Home() {
     e.preventDefault();
     setBusy(true);
     setError(null);
+    setLocWarning(null);
     try {
-      const rows = await rpc('join_game', { code, team_name: isTeamCode ? name : null });
+      let loc = null;
+      let weakGps = false;
+      if (isTeamCode) {
+        // teams must share their location: it's how the chicken sees them coming
+        const r = await askForLocation();
+        if (r.denied) {
+          setError('Location is blocked. Allow location for this site in your phone’s browser settings, then tap Join again. The chicken needs to see where teams are.');
+          setBusy(false);
+          return;
+        }
+        weakGps = !!r.unavailable;
+        if (r.unavailable) setLocWarning('Couldn’t get a GPS fix yet. You’re in, but step outside or check location is on so the chicken can see you.');
+        loc = r.pos || null;
+      }
+      const rows = await rpc('join_game', {
+        code,
+        team_name: isTeamCode ? name : null,
+        players: isTeamCode ? players : null,
+        lat: loc?.lat ?? null,
+        lng: loc?.lng ?? null,
+      });
       const { game_id, role } = rows[0];
       rememberGame(game_id, role);
+      if (weakGps) await new Promise((r) => setTimeout(r, 2500));
       router.push(`/game/${game_id}/${role === 'chicken' ? 'chicken' : 'team'}`);
     } catch (err) {
       setError(err.message);
@@ -84,8 +109,22 @@ export default function Home() {
             <p className="text-sm font-semibold text-muted-foreground">Joining on a second phone? Type the exact same team name.</p>
           </div>
         )}
+        {isTeamCode && (
+          <div className="pop-in space-y-2">
+            <Label htmlFor="player" className="text-base font-extrabold">Who’s on the team?</Label>
+            <PlayersEditor value={players} onChange={setPlayers} />
+            <p className="text-sm font-semibold text-muted-foreground">Every player gets a pint at every wrong pub, and their own tally in the recap.</p>
+          </div>
+        )}
+        {isTeamCode && (
+          <p className="flex items-start gap-2 rounded-2xl border-2 border-border bg-card-2 px-3 py-2.5 text-sm font-semibold">
+            <MapPin className="mt-0.5 size-4 shrink-0 text-hunt" aria-hidden />
+            Joining shares your location with the chicken for the rest of the game. Your phone will ask to allow it.
+          </p>
+        )}
         <ErrorNote>{error}</ErrorNote>
-        <Button size="lg" block disabled={busy || !code.trim() || (isTeamCode && !name.trim())}>
+        <ErrorNote>{locWarning}</ErrorNote>
+        <Button size="lg" block disabled={busy || !code.trim() || (isTeamCode && (!name.trim() || players.length === 0))}>
           {busy ? 'Joining…' : 'Join the hunt'} <ArrowRight aria-hidden />
         </Button>
       </form>

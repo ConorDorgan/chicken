@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import Map from '@/components/Map';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Empty, ErrorNote, Hero, Panel, PhotoGrid, Row, Rows, Screen } from '@/components/game-ui';
+import { Empty, ErrorNote, Hero, Panel, PhotoGrid, PlayerList, Row, Rows, Screen } from '@/components/game-ui';
 import { useLiveData } from '@/lib/hooks';
 import { select, supabase } from '@/lib/supabase';
 import { fmtDuration, fmtTime, signedUrls, TEAM_COLORS } from '@/lib/util';
@@ -129,8 +129,9 @@ export default function Recap({ params }) {
           <Panel
             key={t.id}
             title={<span className="inline-flex items-center gap-2"><span className="size-3.5 rounded-full" style={{ background: colorOf[t.id] }} aria-hidden />{t.name}</span>}
-            action={<Badge variant="chicken">🍺 {pints}</Badge>}
+            action={<Badge variant="chicken">🍺 {pints} each</Badge>}
           >
+            <PlayerList players={t.players} className="-mt-1 mb-2" />
             {tv.length ? (
               <ol className="space-y-1.5">
                 {tv.map((v, i) => (
@@ -152,6 +153,41 @@ export default function Recap({ params }) {
           </Panel>
         );
       })}
+
+      {stats.quickest && (
+        <div className="mb-4 grid grid-cols-2 gap-3">
+          <PubTime tone="found" emoji="⚡" label="Quickest pub" stay={stats.quickest} />
+          {stats.slowest ? (
+            <PubTime tone="alert" emoji="🐢" label="Slowest pub" stay={stats.slowest} />
+          ) : (
+            <div className="grid place-items-center rounded-3xl border-2 border-dashed p-4 text-center text-sm font-bold text-muted-foreground">
+              Only one pint was finished, so there’s no slowest.
+            </div>
+          )}
+        </div>
+      )}
+
+      <Panel title="Pints per person" className="border-chick-edge">
+        {stats.people.length ? (
+          <Rows>
+            {stats.people.map((p) => (
+              <Row
+                key={p.team.id + p.name}
+                lead={<span className="font-display text-xl font-extrabold">{p.rank === 1 && p.pints > 0 ? '👑' : p.rank}</span>}
+                trail={<span className="font-display text-2xl font-extrabold tabular-nums">{p.pints} 🍺</span>}
+              >
+                <span className="block text-lg font-extrabold">{p.name}</span>
+                <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                  <span className="size-2.5 rounded-full" style={{ background: colorOf[p.team.id] }} aria-hidden />
+                  {p.team.name}
+                </span>
+              </Row>
+            ))}
+          </Rows>
+        ) : (
+          <Empty emoji="🍺">No players were named in this game.</Empty>
+        )}
+      </Panel>
 
       <Panel title="Hall of shame" className="border-alert-edge">
         {stats.shame.length ? (
@@ -222,12 +258,13 @@ function computeStats({ game, teams, visits, alerts, locations, pubs }) {
     if (wrong) shame.push({ e: '❌', t: `${t.name} wrongly claimed the chicken ${wrong} time${wrong > 1 ? 's' : ''}` });
   }
 
-  const pints = visits.filter((v) => v.left_at);
-  const slowest = pints.reduce((m, v) => {
-    const d = new Date(v.left_at) - new Date(v.arrived_at);
-    return !m || d > m.d ? { v, d } : m;
-  }, null);
-  if (slowest) shame.push({ e: '🐢', t: `Slowest pint: ${name(slowest.v.team_id)} at ${pubName(slowest.v.pub_id)} (${fmtDuration(slowest.d)})` });
+  // quickest and slowest pub: time from checking in to leaving with the empty-pints photo
+  const stays = visits
+    .filter((v) => v.left_at)
+    .map((v) => ({ team: name(v.team_id), pub: pubName(v.pub_id), ms: new Date(v.left_at) - new Date(v.arrived_at) }))
+    .sort((a, b) => a.ms - b.ms);
+  const quickest = stays[0] || null;
+  const slowest = stays.length > 1 ? stays[stays.length - 1] : null;
 
   const huntStart = new Date(game.hunt_starts_at || 0).getTime();
   const huntEnd = new Date(game.ended_at || Date.now()).getTime();
@@ -242,11 +279,42 @@ function computeStats({ game, teams, visits, alerts, locations, pubs }) {
   }
   if (quiet && quiet.gap > 10 * 60000) shame.push({ e: '📵', t: `Longest gone dark: ${quiet.t.name} (${fmtDuration(quiet.gap)})` });
 
-  facts.push({ e: '🍺', v: visits.filter((v) => v.status === 'done' || v.status === 'locked').length, l: 'pints drunk' });
+  // every wrong pub is a pint for everyone on the team
+  const teamPints = (t) => visits.filter((v) => v.team_id === t.id && (v.status === 'done' || v.status === 'locked')).length;
+  const people = teams
+    .flatMap((t) => (t.players || []).map((name) => ({ name, team: t, pints: teamPints(t) })))
+    .sort((a, b) => b.pints - a.pints || a.name.localeCompare(b.name));
+  // players on the same number of pints share a place
+  for (const p of people) p.rank = 1 + people.filter((q) => q.pints > p.pints).length;
+  const totalPints = people.length
+    ? people.reduce((n, p) => n + p.pints, 0)
+    : visits.filter((v) => v.status === 'done' || v.status === 'locked').length;
+  facts.push({ e: '🍺', v: totalPints, l: 'pints drunk in total' });
+  if (people[0]?.pints > 0) {
+    const top = people.filter((p) => p.pints === people[0].pints);
+    facts.push({ e: '👑', v: people[0].pints, l: top.length > 3 ? `pints each for ${top.length} players` : `most pints: ${top.map((p) => p.name).join(', ')}` });
+  }
   const counts = teams.map((t) => [t, visits.filter((v) => v.team_id === t.id).length]).sort((a, b) => b[1] - a[1]);
   if (counts[0]?.[1]) facts.push({ e: '🗺️', v: counts[0][1], l: `most pubs: ${counts[0][0].name}` });
   const first = teams.find((t) => t.finish_position === 1);
   if (first?.found_at) facts.push({ e: '⚡', v: fmtDuration(new Date(first.found_at) - huntStart), l: `fastest find: ${first.name}` });
   if (game.started_at && game.ended_at) facts.push({ e: '⏱️', v: fmtDuration(new Date(game.ended_at) - new Date(game.started_at)), l: 'game length' });
-  return { shame, facts };
+  return { shame, facts, people, quickest, slowest };
+}
+
+// One of the quickest / slowest pub cards
+function PubTime({ tone, emoji, label, stay }) {
+  const tones = {
+    found: 'bg-found text-found-ink border-found-edge [--sticker-edge:var(--found-edge)]',
+    alert: 'bg-alert text-alert-ink border-alert-edge [--sticker-edge:var(--alert-edge)]',
+  };
+  return (
+    <div className={`pop-in sticker rounded-3xl border-2 p-4 ${tones[tone]}`}>
+      <div className="text-2xl" aria-hidden>{emoji}</div>
+      <div className="text-xs font-extrabold uppercase opacity-80">{label}</div>
+      <div className="font-display text-3xl leading-tight font-extrabold">{fmtDuration(stay.ms)}</div>
+      <div className="font-bold leading-snug">{stay.pub}</div>
+      <div className="text-sm font-semibold opacity-85">{stay.team}</div>
+    </div>
+  );
 }
