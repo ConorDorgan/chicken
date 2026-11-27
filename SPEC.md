@@ -102,7 +102,7 @@ There are no user accounts. Logins are codes per game, plus the admin password.
 
 ## Tech
 
-- **Frontend:** React + Vite, mobile-first and installable to the home screen, hosted on **Vercel**.
+- **Frontend:** Next.js (React), mobile-first and installable to the home screen, hosted on **Vercel**.
 - **Backend:** **Supabase**, which provides the Postgres database, realtime (chicken map, alerts, zone, clues), storage (check-in and pint photos) and row-level security.
 - **Secrecy:** the chicken's pub and team locations are readable only with the chicken code. They are revealed to everyone at game end. This is honour-level: anyone with database access could still look.
 - **Maps:** Leaflet + OpenStreetMap, with no API key.
