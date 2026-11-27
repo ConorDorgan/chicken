@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Beer, Copy, Flag, KeyRound, LogOut, MapPin, Plus, Search, Settings2, Trash2, Trophy } from 'lucide-react';
+import { Beer, Copy, Flag, KeyRound, Loader2, LogOut, MapPin, Plus, RefreshCw, Search, Settings2, Trash2, Trophy } from 'lucide-react';
 import Map from '@/components/Map';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -9,7 +9,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Empty, ErrorNote, Panel, Row, Rows, Screen, TabBar, TopBar, useConfirm } from '@/components/game-ui';
 import { ensureSession, rpc, select, supabase } from '@/lib/supabase';
-import { fmtTime } from '@/lib/util';
+import { distM, fmtTime } from '@/lib/util';
+import { CORK, fetchPubs } from '@/lib/osm';
 import { toast } from 'sonner';
 
 export default function Admin() {
@@ -87,13 +88,22 @@ function Login({ onIn, initialError }) {
 }
 
 // ---------------------------------------------------------------- pubs
+// Every pub in Cork is loaded from OpenStreetMap and shown as a grey dot; tap one (or use the list) to add it.
+const sameSpot = (a, b) => distM(a, b) < 35 || (a.name.toLowerCase() === b.name.toLowerCase() && distM(a, b) < 200);
+
 function Pubs() {
   const ask = useConfirm();
   const [pubs, setPubs] = useState([]);
+  const [osm, setOsm] = useState([]);
+  const [osmState, setOsmState] = useState('loading'); // loading | ok | error
+  const [osmError, setOsmError] = useState(null);
+  const [view, setView] = useState(null);
+  const [filter, setFilter] = useState('');
+  const [selected, setSelected] = useState(null); // an osm candidate or an added pub
+  const [pinMode, setPinMode] = useState(false);
   const [draft, setDraft] = useState(null);
   const [name, setName] = useState('');
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState([]);
+  const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
 
   async function load() {
@@ -103,117 +113,196 @@ function Pubs() {
       setError(e.message);
     }
   }
-  useEffect(() => {
-    load();
-  }, []);
 
-  async function search(e) {
-    e.preventDefault();
-    if (!query.trim()) return;
-    setError(null);
+  async function loadOsm(box) {
+    setOsmState('loading');
+    setOsmError(null);
     try {
-      const params = new URLSearchParams({ q: query, format: 'json', limit: '6' });
-      if (pubs.length) {
-        const lats = pubs.map((p) => p.lat);
-        const lngs = pubs.map((p) => p.lng);
-        const pad = 0.05;
-        params.set('viewbox', `${Math.min(...lngs) - pad},${Math.max(...lats) + pad},${Math.max(...lngs) + pad},${Math.min(...lats) - pad}`);
-      }
-      const r = await fetch(`https://nominatim.openstreetmap.org/search?${params}`);
-      const json = await r.json();
-      setResults(json);
-      if (!json.length) setError('No matches. Try the street name too, or tap the map to drop a pin.');
-    } catch {
-      setError('Search isn’t responding. Tap the map to drop a pin instead.');
+      setOsm(await fetchPubs(box));
+      setOsmState('ok');
+    } catch (e) {
+      setOsmError(e.message);
+      setOsmState('error');
     }
   }
 
-  function pick(r) {
-    setDraft({ lat: Number(r.lat), lng: Number(r.lon) });
-    setName(r.name || r.display_name.split(',')[0]);
-    setResults([]);
-  }
+  useEffect(() => {
+    load();
+    loadOsm(CORK);
+  }, []);
 
-  async function add() {
+  const addedMatch = (c) => pubs.find((p) => sameSpot(p, c));
+
+  async function addPub(c) {
     setError(null);
+    setBusy(c.osmId || 'draft');
     try {
-      await select(supabase().from('pubs').insert({ name: name.trim(), lat: draft.lat, lng: draft.lng }));
-      toast.success(`${name.trim()} added`);
-      setDraft(null);
-      setName('');
-      setQuery('');
-      load();
+      await select(supabase().from('pubs').insert({ name: c.name.trim(), lat: c.lat, lng: c.lng }));
+      toast.success(`${c.name.trim()} added`);
+      await load();
     } catch (e) {
       setError(e.message);
     }
+    setBusy(null);
   }
 
-  async function remove(p) {
+  async function removePub(p) {
     const ok = await ask({
-      title: `Delete ${p.name}?`,
+      title: `Remove ${p.name}?`,
       body: 'It also disappears from any games that use it, including their history.',
-      action: 'Delete pub',
+      action: 'Remove pub',
       variant: 'alert',
     });
     if (!ok) return;
     try {
       await select(supabase().from('pubs').delete().eq('id', p.id));
+      setSelected(null);
       load();
     } catch (e) {
       setError(e.message);
     }
   }
 
-  const mapPubs = pubs.map((p) => ({ ...p, icon: '🍺' }));
+  async function addDraft() {
+    await addPub({ name, lat: draft.lat, lng: draft.lng });
+    setDraft(null);
+    setName('');
+    setPinMode(false);
+  }
+
+  const candidates = osm.filter((c) => !addedMatch(c));
+  const q = filter.trim().toLowerCase();
+  const shown = q ? osm.filter((c) => c.name.toLowerCase().includes(q) || c.street.toLowerCase().includes(q)) : osm;
+
+  const mapPubs = [
+    ...candidates.map((c) => ({ ...c, id: c.osmId, small: true, highlight: selected?.osmId === c.osmId })),
+    ...pubs.map((p) => ({ ...p, icon: '🍺', tone: 'checked', highlight: selected?.id === p.id })),
+  ];
   if (draft) mapPubs.push({ id: 'draft', name: name || 'New pub', ...draft, icon: '📍', highlight: true });
+
+  // the view has moved well away from Cork: offer to load pubs there
+  const awayFromCork =
+    view && (view.north < CORK.south || view.south > CORK.north || view.east < CORK.west || view.west > CORK.east);
+
+  const sel = selected && (selected.osmId ? { ...selected, added: addedMatch(selected) } : { ...selected, added: selected });
 
   return (
     <>
-      <form className="mb-3 flex gap-2" onSubmit={search}>
-        <Input className="flex-1" placeholder="Search for a pub…" aria-label="Search for a pub" value={query} onChange={(e) => setQuery(e.target.value)} />
-        <Button size="icon" variant="secondary" aria-label="Search"><Search aria-hidden /></Button>
-      </form>
-      {results.length > 0 && (
-        <Panel>
-          <Rows>
-            {results.map((r) => (
-              <Row key={r.place_id} lead="📍">
-                <button className="min-h-11 w-full text-left font-semibold" onClick={() => pick(r)}>{r.display_name}</button>
-              </Row>
-            ))}
-          </Rows>
+      <p className="mb-2 text-sm font-semibold text-muted-foreground">
+        Grey dots are pubs from OpenStreetMap. Tap one to add it. 🍺 pins are already on your list.
+      </p>
+      <Map
+        height="50vh"
+        pubs={mapPubs}
+        fitKey={`admin-${osmState}`}
+        onViewChange={setView}
+        onPubClick={(p) => {
+          if (p.id === 'draft') return;
+          setSelected(p.small ? osm.find((c) => c.osmId === p.osmId) : pubs.find((x) => x.id === p.id));
+        }}
+        onMapClick={(ll) => {
+          if (pinMode) setDraft(ll);
+          else setSelected(null);
+        }}
+      />
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {osmState === 'loading' && <Badge><Loader2 className="animate-spin" aria-hidden /> Loading pubs…</Badge>}
+        {osmState === 'ok' && <Badge variant="hunt">{osm.length} pubs found</Badge>}
+        {(awayFromCork || osmState === 'error') && view && (
+          <Button size="sm" variant="secondary" onClick={() => loadOsm(view)}>
+            <RefreshCw aria-hidden /> Load pubs in this area
+          </Button>
+        )}
+        <Button size="sm" variant={pinMode ? 'chicken' : 'ghost'} onClick={() => { setPinMode(!pinMode); setDraft(null); setSelected(null); }}>
+          <MapPin aria-hidden /> {pinMode ? 'Tap the map to drop a pin' : 'Pub missing? Drop a pin'}
+        </Button>
+      </div>
+      <ErrorNote>{osmError}</ErrorNote>
+
+      {sel && !draft && (
+        <Panel className="pop-in mt-4 border-chick-edge">
+          <div className="flex items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xl font-extrabold">{sel.name}</p>
+              {sel.street && <p className="text-sm font-semibold text-muted-foreground">{sel.street}</p>}
+            </div>
+            {sel.added ? (
+              <Button variant="secondary" onClick={() => removePub(sel.added)}><Trash2 aria-hidden /> Remove</Button>
+            ) : (
+              <Button variant="found" disabled={busy === sel.osmId} onClick={() => addPub(sel)}><Plus aria-hidden /> Add</Button>
+            )}
+          </div>
         </Panel>
       )}
-      <p className="mb-2 text-sm font-semibold text-muted-foreground">Or tap the map to drop a pin.</p>
-      <Map pubs={mapPubs} onMapClick={(ll) => setDraft(ll)} fitKey={pubs.length} />
+
       {draft && (
-        <Panel className="mt-4 border-chick-edge">
+        <Panel className="pop-in mt-4 border-chick-edge">
           <div className="space-y-3">
-            <Label htmlFor="pubname" className="text-base font-extrabold">Pub name</Label>
-            <Input id="pubname" value={name} onChange={(e) => setName(e.target.value)} />
+            <Label htmlFor="pubname" className="text-base font-extrabold">Name this pub</Label>
+            <Input id="pubname" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. The Corner House" />
             <div className="flex gap-2">
-              <Button className="flex-1" variant="found" disabled={!name.trim()} onClick={add}><Plus aria-hidden /> Add pub</Button>
+              <Button className="flex-1" variant="found" disabled={!name.trim() || busy === 'draft'} onClick={addDraft}><Plus aria-hidden /> Add pub</Button>
               <Button variant="secondary" onClick={() => setDraft(null)}>Cancel</Button>
             </div>
           </div>
         </Panel>
       )}
       <ErrorNote>{error}</ErrorNote>
-      <Panel title={`Pubs (${pubs.length})`} className="mt-4">
+
+      <Panel title={`Your pubs (${pubs.length})`} className="mt-4">
         {pubs.length ? (
           <Rows>
             {pubs.map((p) => (
               <Row
                 key={p.id}
                 lead="🍺"
-                trail={<Button size="icon" variant="ghost" aria-label={`Delete ${p.name}`} onClick={() => remove(p)}><Trash2 aria-hidden /></Button>}
+                trail={<Button size="icon" variant="ghost" aria-label={`Remove ${p.name}`} onClick={() => removePub(p)}><Trash2 aria-hidden /></Button>}
               >
-                <span className="font-bold">{p.name}</span>
+                <button className="min-h-11 w-full text-left font-bold" onClick={() => setSelected(p)}>{p.name}</button>
               </Row>
             ))}
           </Rows>
         ) : (
-          <Empty emoji="🍺">Add your first pub: search above or tap the map.</Empty>
+          <Empty emoji="🍺">No pubs yet. Tap grey dots on the map, or add from the list below.</Empty>
+        )}
+      </Panel>
+
+      <Panel title="All pubs" action={osmState === 'ok' && <Badge>{candidates.length} not added</Badge>}>
+        <div className="relative mb-2">
+          <Search className="absolute top-1/2 left-3.5 size-5 -translate-y-1/2 text-muted-foreground" aria-hidden />
+          <Input className="pl-11" placeholder="Filter by name or street…" aria-label="Filter pubs" value={filter} onChange={(e) => setFilter(e.target.value)} />
+        </div>
+        {osmState === 'loading' && <Empty emoji="⏳">Loading pubs from OpenStreetMap…</Empty>}
+        {osmState === 'error' && <Empty emoji="🗺️">The pub list didn’t load. Use “Load pubs in this area”, or drop pins by hand.</Empty>}
+        {osmState === 'ok' && (
+          shown.length ? (
+            <Rows>
+              {shown.map((c) => {
+                const added = addedMatch(c);
+                return (
+                  <Row
+                    key={c.osmId}
+                    lead={added ? '✅' : '⚪'}
+                    trail={
+                      added ? (
+                        <Button size="sm" variant="ghost" onClick={() => removePub(added)}>Remove</Button>
+                      ) : (
+                        <Button size="sm" variant="found" disabled={busy === c.osmId} onClick={() => addPub(c)}><Plus aria-hidden /> Add</Button>
+                      )
+                    }
+                  >
+                    <button className="min-h-11 w-full text-left" onClick={() => setSelected(c)}>
+                      <span className="block font-bold">{c.name}</span>
+                      {c.street && <span className="block text-sm font-semibold text-muted-foreground">{c.street}</span>}
+                    </button>
+                  </Row>
+                );
+              })}
+            </Rows>
+          ) : (
+            <Empty emoji="🔍">No pubs match “{filter}”. Missing one? Drop a pin.</Empty>
+          )
         )}
       </Panel>
     </>
