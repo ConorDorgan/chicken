@@ -17,6 +17,7 @@ export default function MapView({
   routes = [],
   onPubClick,
   onMapClick,
+  onViewChange,
   height = '45vh',
   fitKey,
 }) {
@@ -25,7 +26,7 @@ export default function MapView({
   const L = useRef(null);
   const layer = useRef(null);
   const cbs = useRef({});
-  cbs.current = { onPubClick, onMapClick };
+  cbs.current = { onPubClick, onMapClick, onViewChange };
   const fitted = useRef(null);
 
   useEffect(() => {
@@ -40,8 +41,14 @@ export default function MapView({
           attribution: '© OpenStreetMap',
         })
         .addTo(map.current);
-      map.current.setView([53.35, -6.26], 13);
+      map.current.setView([51.8985, -8.4756], 14); // Cork city centre
       map.current.on('click', (e) => cbs.current.onMapClick?.({ lat: e.latlng.lat, lng: e.latlng.lng }));
+      const reportView = () => {
+        const b = map.current.getBounds();
+        cbs.current.onViewChange?.({ south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() });
+      };
+      map.current.on('moveend', reportView);
+      setTimeout(reportView, 0);
       layer.current = L.current.layerGroup().addTo(map.current);
       draw();
     });
@@ -84,6 +91,24 @@ export default function MapView({
     }
 
     for (const p of pubs) {
+      // small = a lightweight dot (used for the long list of not-yet-added pubs), name on tap
+      if (p.small) {
+        const css = getComputedStyle(document.documentElement);
+        const dot = Lf.circleMarker([p.lat, p.lng], {
+          radius: p.highlight ? 11 : 8,
+          weight: 3,
+          color: p.highlight ? css.getPropertyValue('--chick-edge').trim() : '#ffffff',
+          fillColor: p.highlight ? css.getPropertyValue('--chick').trim() : '#7d86b3',
+          fillOpacity: 1,
+        }).addTo(layer.current);
+        dot.bindTooltip(escapeHtml(p.name), { direction: 'top', offset: [0, -8] });
+        dot.on('click', (e) => {
+          Lf.DomEvent.stopPropagation(e);
+          cbs.current.onPubClick?.(p);
+        });
+        if (!p.noFit) bounds.push([p.lat, p.lng]);
+        continue;
+      }
       const icon = Lf.divIcon({
         className: '',
         html: `<div class="pin ${p.tone ? 'pin-' + p.tone : ''} ${p.dim ? 'pin-dim' : ''} ${p.highlight ? 'pin-hi' : ''}">${p.icon || '🍺'}</div>
