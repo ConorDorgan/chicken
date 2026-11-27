@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Empty, ErrorNote, Panel, Row, Rows, Screen, TabBar, TopBar, useConfirm } from '@/components/game-ui';
 import { ensureSession, rpc, select, supabase } from '@/lib/supabase';
 import { distM, fmtTime } from '@/lib/util';
-import { CORK, fetchPubs } from '@/lib/osm';
+import { CORK, CORK_PUBS, fetchPubs } from '@/lib/osm';
 import { toast } from 'sonner';
 
 export default function Admin() {
@@ -94,8 +94,8 @@ const sameSpot = (a, b) => distM(a, b) < 35 || (a.name.toLowerCase() === b.name.
 function Pubs() {
   const ask = useConfirm();
   const [pubs, setPubs] = useState([]);
-  const [osm, setOsm] = useState([]);
-  const [osmState, setOsmState] = useState('loading'); // loading | ok | error
+  const [osm, setOsm] = useState(CORK_PUBS);
+  const [osmState, setOsmState] = useState('ok'); // loading | ok | error
   const [osmError, setOsmError] = useState(null);
   const [view, setView] = useState(null);
   const [filter, setFilter] = useState('');
@@ -128,7 +128,6 @@ function Pubs() {
 
   useEffect(() => {
     load();
-    loadOsm(CORK);
   }, []);
 
   const addedMatch = (c) => pubs.find((p) => sameSpot(p, c));
@@ -209,7 +208,7 @@ function Pubs() {
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {osmState === 'loading' && <Badge><Loader2 className="animate-spin" aria-hidden /> Loading pubs…</Badge>}
         {osmState === 'ok' && <Badge variant="hunt">{osm.length} pubs found</Badge>}
-        {(awayFromCork || osmState === 'error') && view && (
+        {awayFromCork && view && (
           <Button size="sm" variant="secondary" onClick={() => loadOsm(view)}>
             <RefreshCw aria-hidden /> Load pubs in this area
           </Button>
